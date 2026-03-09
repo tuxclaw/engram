@@ -2,7 +2,7 @@
 """
 Export OpenClaw JSONL session transcripts to daily markdown files for Engram ingestion.
 Reads from ~/.openclaw/agents/*/sessions/*.jsonl
-Writes to ~/clawd/memory/YYYY-MM-DD-<slug>.md
+Writes to memory dir as YYYY-MM-DD-<slug>.md
 """
 import json
 import os
@@ -12,7 +12,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 SESSIONS_ROOT = Path(os.path.expanduser("~/.openclaw/agents"))
-MEMORY_DIR = Path(os.path.expanduser("~/clawd/memory"))
+MEMORY_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "exported-sessions"
+# Override: set ENGRAM_MEMORY_DIR env or edit config.json memory_dir
+if os.environ.get("ENGRAM_MEMORY_DIR"):
+    MEMORY_DIR = Path(os.path.expanduser(os.environ["ENGRAM_MEMORY_DIR"]))
 PROCESSED_FILE = MEMORY_DIR / ".exported_sessions"
 
 def load_processed():

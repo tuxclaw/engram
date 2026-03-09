@@ -14,7 +14,7 @@ from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
 from engram.ingest import find_memory_files, ingest_file, get_processed_files, save_processed_files
 from pathlib import Path
 
-MEMORY_DIR = Path(os.path.expanduser("~/clawd/memory"))
+MEMORY_DIR = Path(os.environ.get("ENGRAM_MEMORY_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "exported-sessions")))
 
 def main():
     db = get_db()

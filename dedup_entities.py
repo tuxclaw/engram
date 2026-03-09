@@ -26,7 +26,8 @@ def normalize_name(name: str) -> str:
     # Collapse separators
     n = re.sub(r'[-_\s]+', ' ', n)
     # Known aliases
-    n = n.replace('the dev', 'thedev')
+    # Add custom name normalizations here if needed
+    # n = n.replace('the dev', 'thedev')
     return n
 
 

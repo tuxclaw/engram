@@ -47,7 +47,7 @@ def _load_config() -> dict:
 
 _CFG = _load_config()
 
-MEMORY_DIR = Path(os.path.expanduser(_CFG.get("memory_dir", "~/clawd/memory")))
+MEMORY_DIR = Path(os.path.expanduser(_CFG.get("memory_dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "exported-sessions"))))
 MAIN_AGENT_ID = _CFG.get("main_agent_id", "main")
 
 # Build agent workspace memory dirs from config

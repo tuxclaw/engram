@@ -26,7 +26,7 @@ import kuzu
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engram.schema import get_db, get_conn, get_stats
 
-BRIEFING_PATH = os.path.expanduser("~/clawd/BRIEFING.md")
+BRIEFING_PATH = os.environ.get("ENGRAM_BRIEFING_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "BRIEFING.md"))
 
 
 def get_recent_episodes(conn: kuzu.Connection, days: int = 3, limit: int = 15) -> list[dict]:

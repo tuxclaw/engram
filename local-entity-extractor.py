@@ -23,9 +23,9 @@ import requests
 # Config
 OLLAMA_URL = "http://localhost:11434/v1/chat/completions"
 MODEL = "qwen3:8b"
-MEMORY_DIR = Path(os.path.expanduser("~/clawd/memory"))
-ENTITY_DIR = Path(os.path.expanduser("~/clawd/engram/entities"))
-GRAPH_DB = Path(os.path.expanduser("~/clawd/engram/graph.json"))
+MEMORY_DIR = Path(os.environ.get("ENGRAM_MEMORY_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "exported-sessions")))
+ENTITY_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "entities"))
+GRAPH_DB = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.json"))
 MAX_CHUNK_CHARS = 3000  # Split logs into chunks of this size
 
 SYSTEM_PROMPT = """You are an entity extraction agent. Extract entities and relationships from work logs into JSON. Output ONLY valid JSON — no markdown fences, no thinking tags, no explanations.
