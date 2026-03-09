@@ -18,6 +18,7 @@ import re
 import sys
 import hashlib
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -33,8 +34,26 @@ from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
 # Configuration
 # =========================================================
 
-MEMORY_DIR = Path(os.path.expanduser("~/clawd/memory"))
 ENGRAM_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+
+# Load config
+def _load_config() -> dict:
+    """Load engram config.json, falling back to sensible defaults."""
+    cfg_path = ENGRAM_DIR / "config.json"
+    if cfg_path.exists():
+        with open(cfg_path) as f:
+            return json.load(f)
+    return {}
+
+_CFG = _load_config()
+
+MEMORY_DIR = Path(os.path.expanduser(_CFG.get("memory_dir", "~/clawd/memory")))
+MAIN_AGENT_ID = _CFG.get("main_agent_id", "main")
+
+# Build agent workspace memory dirs from config
+AGENT_WORKSPACE_MEMORY_DIRS = {}
+for agent_id, mem_path in _CFG.get("agent_workspaces", {}).items():
+    AGENT_WORKSPACE_MEMORY_DIRS[agent_id] = Path(os.path.expanduser(mem_path))
 PROCESSED_LOG = ENGRAM_DIR / ".processed_files.json"
 
 # Extraction prompt for the LLM
@@ -115,15 +134,26 @@ def save_processed_files(processed: dict):
 
 
 def find_memory_files() -> list[Path]:
-    """Find all memory files that need processing."""
+    """Find all memory files that need processing across all memory directories."""
     processed = get_processed_files()
     files = []
     
+    # Main memory directory (Jarvis + session exports)
     for f in sorted(MEMORY_DIR.glob("*.md")):
         mtime = str(f.stat().st_mtime)
         key = str(f)
         if key not in processed or processed[key] != mtime:
             files.append(f)
+    
+    # Agent workspace memory directories
+    for agent_id, mem_dir in AGENT_WORKSPACE_MEMORY_DIRS.items():
+        if not mem_dir.exists():
+            continue
+        for f in sorted(mem_dir.glob("*.md")):
+            mtime = str(f.stat().st_mtime)
+            key = str(f)
+            if key not in processed or processed[key] != mtime:
+                files.append(f)
     
     return files
 
@@ -304,8 +334,45 @@ def _call_ollama(prompt: str) -> Optional[dict]:
         return parsed
 
 
+def extract_agent_from_filepath(filepath: Path) -> str:
+    """Extract agent ID from memory file — checks workspace path first, then filename pattern.
+    
+    Resolution order:
+    1. Agent workspace memory dirs (from config.json agent_workspaces)
+    2. Known agent names in filename: YYYY-MM-DD-<agent>-<hash>.md
+    3. Files in main memory dir (config.json memory_dir) default to main_agent_id
+    4. Everything else → 'shared'
+    """
+    filepath_str = str(filepath.resolve())
+    
+    # Check if file is in an agent workspace memory directory
+    for agent_id, mem_dir in AGENT_WORKSPACE_MEMORY_DIRS.items():
+        if mem_dir.exists() and filepath_str.startswith(str(mem_dir.resolve())):
+            return agent_id
+    
+    # Check if file is in main agent memory directory
+    if MEMORY_DIR.exists() and filepath_str.startswith(str(MEMORY_DIR.resolve())):
+        # Check for known non-main agent names in filename pattern
+        match = re.match(r'\d{4}-\d{2}-\d{2}-([a-zA-Z][a-zA-Z0-9_-]*)-[a-f0-9]+\.md$', filepath.name)
+        if match:
+            agent_name = match.group(1).lower()
+            # If it matches a configured agent workspace, use that ID
+            if agent_name in AGENT_WORKSPACE_MEMORY_DIRS:
+                return agent_name
+        # Everything else in main memory dir belongs to the main agent
+        return MAIN_AGENT_ID
+    
+    # Fall back to filename pattern for files from unknown locations
+    match = re.match(r'\d{4}-\d{2}-\d{2}-([a-zA-Z][a-zA-Z0-9_-]*)-[a-f0-9]+\.md$', filepath.name)
+    if match:
+        return match.group(1)
+    
+    return "shared"
+
+
 def store_extraction(conn: kuzu.Connection, extraction: dict, 
-                     source_file: str, date_str: str, chunk_text_content: str):
+                     source_file: str, date_str: str, chunk_text_content: str,
+                     agent_id: str = "shared"):
     """Store extracted entities, relationships, facts, and emotions in the graph.
     
     Note: Kuzu reserves certain keywords (desc, type, etc.) so we use 
@@ -337,6 +404,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             "e.source_file = $p_src, "
             "e.occurred_at = timestamp($p_occ), "
             "e.importance = $p_imp, "
+            "e.agent_id = $p_agent, "
             "e.created_at = timestamp($p_now)",
             {
                 "p_id": episode_id,
@@ -345,6 +413,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 "p_src": source_file,
                 "p_occ": episode_ts,
                 "p_imp": 0.5,
+                "p_agent": agent_id,
                 "p_now": now_str
             }
         )
@@ -370,6 +439,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 "e.description = $p_desc, "
                 "e.importance = CASE WHEN e.importance IS NULL THEN 0.5 ELSE e.importance END, "
                 "e.access_count = CASE WHEN e.access_count IS NULL THEN 0 ELSE e.access_count END, "
+                "e.agent_id = $p_agent, "
                 "e.updated_at = timestamp($p_now), "
                 "e.created_at = CASE WHEN e.created_at IS NULL THEN timestamp($p_now) ELSE e.created_at END",
                 {
@@ -377,6 +447,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "p_name": name,
                     "p_type": ent.get("type", "concept"),
                     "p_desc": ent.get("description", ""),
+                    "p_agent": agent_id,
                     "p_now": now_str
                 }
             )
@@ -476,6 +547,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 "f.category = $p_cat, "
                 "f.confidence = $p_conf, "
                 "f.valid_at = timestamp($p_vat), "
+                "f.agent_id = $p_agent, "
                 "f.updated_at = timestamp($p_now), "
                 "f.importance = CASE WHEN f.importance IS NULL THEN 0.5 ELSE f.importance END, "
                 "f.access_count = CASE WHEN f.access_count IS NULL THEN 0 ELSE f.access_count END, "
@@ -487,6 +559,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "p_cat": fact.get("category", "context"),
                     "p_conf": fact.get("confidence", 0.8),
                     "p_vat": episode_ts,
+                    "p_agent": agent_id,
                     "p_epid": episode_id,
                     "p_now": now_str
                 }
@@ -535,6 +608,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 "em.valence = $p_val, "
                 "em.arousal = $p_aro, "
                 "em.description = $p_desc, "
+                "em.agent_id = $p_agent, "
                 "em.created_at = timestamp($p_now)",
                 {
                     "p_id": emid,
@@ -542,6 +616,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "p_val": emotion.get("valence", 0.0),
                     "p_aro": emotion.get("arousal", 0.5),
                     "p_desc": emotion.get("context", ""),
+                    "p_agent": agent_id,
                     "p_now": now_str
                 }
             )
@@ -615,13 +690,51 @@ def ingest_file(conn: kuzu.Connection, filepath: Path, force: bool = False):
             n_emo = len(extraction.get("emotions", []))
             print(f"✅ {n_ent} entities, {n_rel} relations, {n_fact} facts, {n_emo} emotions")
             
-            store_extraction(conn, extraction, filepath.name, date_str, chunk)
+            file_agent = extract_agent_from_filepath(filepath)
+            store_extraction(conn, extraction, filepath.name, date_str, chunk, agent_id=file_agent)
         else:
             print("⚠️  extraction failed")
 
 
-def ingest_all(force: bool = False, limit: int = None):
-    """Ingest all unprocessed memory files."""
+def _extract_file(filepath: Path) -> dict:
+    """Extract entities from a single file (thread-safe, no DB access).
+    Returns dict with filepath, agent_id, date_str, and list of (chunk, extraction) pairs."""
+    result = {
+        "filepath": filepath,
+        "agent_id": extract_agent_from_filepath(filepath),
+        "date_str": extract_date_from_filename(filepath),
+        "extractions": [],
+        "error": None
+    }
+    
+    try:
+        text = filepath.read_text(encoding="utf-8")
+        if not text.strip():
+            return result
+        
+        chunks = chunk_text(text)
+        
+        for chunk in chunks:
+            if len(chunk.strip()) < 50:
+                continue
+            
+            prompt = EXTRACTION_PROMPT.format(
+                text=chunk,
+                source_file=filepath.name,
+                date=result["date_str"] or "unknown"
+            )
+            
+            extraction = call_llm(prompt)
+            if extraction:
+                result["extractions"].append((chunk, extraction))
+    except Exception as e:
+        result["error"] = str(e)
+    
+    return result
+
+
+def ingest_all(force: bool = False, limit: int = None, workers: int = 6):
+    """Ingest all unprocessed memory files with parallel LLM extraction."""
     db = get_db()
     conn = get_conn(db)
     
@@ -637,19 +750,55 @@ def ingest_all(force: bool = False, limit: int = None):
     if limit:
         files = files[:limit]
     
-    print(f"🧠 Engram Ingestor")
-    print(f"   Found {len(files)} file(s) to process")
+    total = len(files)
+    print(f"🧠 Engram Ingestor (parallel, {workers} workers)")
+    print(f"   Found {total} file(s) to process")
     
     processed = get_processed_files()
+    done = 0
+    failed = 0
     
-    for filepath in files:
-        try:
-            ingest_file(conn, filepath)
-            # Mark as processed
-            processed[str(filepath)] = str(filepath.stat().st_mtime)
-            save_processed_files(processed)
-        except Exception as e:
-            print(f"   ❌ Error processing {filepath.name}: {e}")
+    # Process in parallel: LLM extraction is the bottleneck, DB writes are fast
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_extract_file, f): f for f in files}
+        
+        for future in as_completed(futures):
+            filepath = futures[future]
+            done += 1
+            
+            try:
+                result = future.result()
+                
+                if result["error"]:
+                    print(f"   ❌ [{done}/{total}] {filepath.name}: {result['error']}")
+                    failed += 1
+                    continue
+                
+                n_ext = len(result["extractions"])
+                if n_ext == 0:
+                    print(f"   ⏭️  [{done}/{total}] {filepath.name} (empty/skipped)")
+                else:
+                    total_ent = sum(len(e.get("entities", [])) for _, e in result["extractions"])
+                    total_fact = sum(len(e.get("facts", [])) for _, e in result["extractions"])
+                    print(f"   ✅ [{done}/{total}] {filepath.name} -> {total_ent} entities, {total_fact} facts [agent:{result['agent_id']}]")
+                    
+                    # Store all extractions (serialized DB writes)
+                    for chunk, extraction in result["extractions"]:
+                        store_extraction(
+                            conn, extraction, filepath.name,
+                            result["date_str"], chunk,
+                            agent_id=result["agent_id"]
+                        )
+                
+                # Mark as processed
+                processed[str(filepath)] = str(filepath.stat().st_mtime)
+                save_processed_files(processed)
+                
+            except Exception as e:
+                print(f"   ❌ [{done}/{total}] {filepath.name}: {e}")
+                failed += 1
+    
+    print(f"\n📊 Complete: {done - failed} succeeded, {failed} failed")
     
     # Print final stats
     stats = get_stats(conn)
@@ -662,6 +811,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Engram Memory Ingestor")
     parser.add_argument("--force", action="store_true", help="Re-process all files")
     parser.add_argument("--limit", type=int, help="Max files to process")
+    parser.add_argument("--workers", type=int, default=6, help="Parallel workers (default: 6)")
     parser.add_argument("--file", type=str, help="Process a specific file")
     args = parser.parse_args()
     
@@ -678,4 +828,4 @@ if __name__ == "__main__":
         stats = get_stats(conn)
         print_stats(stats)
     else:
-        ingest_all(force=args.force, limit=args.limit)
+        ingest_all(force=args.force, limit=args.limit, workers=args.workers)

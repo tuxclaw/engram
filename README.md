@@ -1,74 +1,79 @@
-# Engram
+# Engram — Graph Memory for OpenClaw Agents
 
-**Temporal Knowledge Graph Memory for AI Agents**
+Engram is a temporal knowledge graph memory system for [OpenClaw](https://github.com/openclaw/openclaw) agents. It extracts entities, facts, relationships, and emotions from session logs, stores them in a [Kuzu](https://kuzudb.com) graph database, and injects relevant context into every conversation turn.
 
-Engram is a self-hosted memory system that gives AI agents persistent memory across sessions. It ingests conversation transcripts, extracts entities, facts, relationships, and emotions using an LLM, and stores them in an embedded graph database ([Kùzu](https://kuzudb.com/)).
+## Features
 
-Built for [OpenClaw](https://github.com/openclaw/openclaw) but designed to work with any agent framework that produces conversation logs.
-
-## What it does
-
-- **Extracts knowledge** from conversations — entities, facts, relationships, emotions
-- **Builds a graph** — 2,800+ nodes and 8,100+ relationships from real usage
-- **Provides context** — agents wake up knowing what happened yesterday
-- **Runs locally** — no cloud dependencies, embedded database, your data stays yours
-- **Uses any LLM** — xAI (Grok) by default, or any OpenAI-compatible endpoint
-
-## Quick Start
-
-```bash
-# Install
-python3 -m venv .venv
-source .venv/bin/activate
-pip install kuzu mcp
-
-# Configure
-# Edit config.json — set your preferred model
-
-# Run
-python export_sessions.py          # Export sessions to markdown
-python engram.py ingest            # Extract knowledge into graph
-python engram.py briefing          # Generate agent briefing
-python engram.py search "query"    # Search the knowledge graph
-```
-
-See [SKILL.md](SKILL.md) for the complete setup guide.
+- **Multi-agent memory isolation** — Each agent's facts scoped by `agent_id`
+- **Parallel ingest** — 6+ workers for LLM extraction (~10 files/min)
+- **Context engine plugin** — Injects graph facts into OpenClaw agent context per turn
+- **Entity deduplication** — Normalize and merge duplicate entities
+- **Interactive dashboard** — Sigma.js graph visualization with per-agent filtering
+- **Hourly sync** — Cron-based export → ingest → briefing pipeline
+- **Semantic + graph search** — Kuzu graph queries + Chroma vector embeddings
 
 ## Architecture
 
 ```
-Sessions (JSONL) → export → Markdown → ingest → LLM extraction → Kùzu Graph DB → API/CLI
+Session JSONL → Export → Markdown → LLM Extraction → Kuzu Graph DB
+                                                          ↓
+                                          Context Engine Plugin → Agent turns
+                                                          ↓
+                                              Dashboard (optional)
 ```
 
-## API
+## Components
 
-HTTP server on port 3456:
+| Directory | Description |
+|---|---|
+| `*.py` (root) | Core: ingest, query, schema, export, dedup, consolidation |
+| `dashboard/` | FastAPI + Sigma.js visualization with agent filtering |
+| `extensions/context-engine/` | OpenClaw plugin for context injection |
+| `skills/engram/` | Setup guide as an OpenClaw skill |
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Node/relationship counts |
-| `/stats` | GET | Breakdown by type |
-| `/briefing` | GET | Full session briefing |
-| `/search` | POST | Semantic search |
-| `/entity` | POST | Entity deep context |
-| `/recent` | POST | Recent episodes |
+## Quick Start
 
-## LLM Backend
+See [`skills/engram/SKILL.md`](skills/engram/SKILL.md) for full setup instructions.
 
-Engram uses xAI (Grok) for entity and relationship extraction.
+```bash
+# Install dependencies
+python3 -m venv .venv-memory
+source .venv-memory/bin/activate
+pip install kuzu chromadb
 
-**API key resolution** (in priority order):
-1. `XAI_API_KEY` env var
-2. `xai_api_key` in `config.json`
-3. `skills.entries.grok.apiKey` in `~/.openclaw/openclaw.json` (auto-detected if you use OpenClaw)
+# Export sessions and run ingest
+python export_sessions.py
+python ingest.py --workers 6
 
-Override the model via `ENGRAM_MODEL` env var or `model` in `config.json` (default: `grok-3-mini-fast`).
+# Query
+python context_query.py query "search terms" --agent main
+```
+
+## Schema
+
+**Nodes:** Entity, Fact, Episode, Emotion, SessionState  
+**Relationships:** RELATES_TO, CAUSED, PART_OF, MENTIONED_IN, EPISODE_EVOKES, ENTITY_EVOKES, DERIVED_FROM, ABOUT
+
+Every node has an `agent_id` field for multi-agent isolation.
+
+## Dashboard
+
+```bash
+cd dashboard
+npm install && npm run bundle
+pm2 start ecosystem.config.js
+# → http://localhost:3847
+```
+
+Features: graph visualization, per-agent filtering, entity search, node detail view, connection explorer.
 
 ## Requirements
 
 - Python 3.10+
-- xAI API key (get one at [x.ai](https://x.ai))
-- ~50MB disk for the graph database
+- Node.js 18+ (dashboard only)
+- [Kuzu](https://kuzudb.com) (via pip)
+- LLM API access (xAI/Grok by default, configurable)
+- [OpenClaw](https://github.com/openclaw/openclaw) (for context engine plugin)
 
 ## License
 

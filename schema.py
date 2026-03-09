@@ -23,6 +23,7 @@ and importance scores.
 import kuzu
 import os
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -30,9 +31,21 @@ from datetime import datetime
 DB_PATH = os.environ.get("ENGRAM_DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), ".engram-db"))
 
 
-def get_db(read_only: bool = False) -> kuzu.Database:
-    """Get or create the Engram database."""
-    return kuzu.Database(DB_PATH, read_only=read_only)
+def get_db(read_only: bool = False, retries: int = 10, delay: float = 3.0) -> kuzu.Database:
+    """Get or create the Engram database. Retries on lock contention."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return kuzu.Database(DB_PATH, read_only=read_only)
+        except RuntimeError as e:
+            if "lock" in str(e).lower() and attempt < retries - 1:
+                if attempt == 0:
+                    print(f"⏳ DB locked, retrying up to {retries * delay:.0f}s...")
+                time.sleep(delay)
+                last_err = e
+            else:
+                raise
+    raise last_err
 
 
 def get_conn(db: kuzu.Database = None) -> kuzu.Connection:

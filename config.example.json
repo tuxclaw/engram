@@ -1,0 +1,37 @@
+{
+  "model": "grok-3-mini-fast",
+  "xai_api_key": "",
+
+  "main_agent_id": "main",
+  "memory_dir": "~/clawd/memory",
+
+  "agent_workspaces": {
+    "loopfans": "~/.openclaw/workspace-loopfans/memory",
+    "sillyfarms": "~/.openclaw/workspace-sillyfarms/memory"
+  },
+
+  "sessions_dir": "~/.openclaw/agents",
+  "ingest_workers": 6,
+  "ingest_interval_minutes": 60,
+
+  "dashboard": {
+    "port": 3847,
+    "db_read_only": true
+  },
+
+  "context_engine": {
+    "workspace_root": "",
+    "engram_dir": "",
+    "python_bin": "",
+    "agents_dir": "~/.openclaw/agents"
+  },
+
+  "_notes": {
+    "model": "LLM for extraction: grok-3-mini-fast (default). Set via ENGRAM_MODEL env or here.",
+    "xai_api_key": "Set here, via XAI_API_KEY env, or auto-detected from openclaw.json skills.entries.grok.apiKey",
+    "main_agent_id": "Your primary agent ID. Files in memory_dir default to this agent.",
+    "memory_dir": "Main agent memory directory. All files here are tagged with main_agent_id.",
+    "agent_workspaces": "Map of agent_id → memory directory path for additional agents.",
+    "context_engine": "Paths for the OpenClaw context engine plugin. Leave empty to auto-detect from workspace."
+  }
+}

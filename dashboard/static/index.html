@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Engram — Memory Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Sigma.js v2 + Graphology from CDN -->
+    <script src="/static/js/vendor.bundle.js"></script>
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header id="top-bar">
+        <div class="logo">
+            <span class="logo-icon">🧠</span>
+            <span class="logo-text">Engram</span>
+        </div>
+
+        <nav class="tab-nav">
+            <button class="tab-btn active" data-tab="overview">
+                <i class="fas fa-chart-pie"></i>
+                <span>Overview</span>
+            </button>
+            <button class="tab-btn" data-tab="graph">
+                <i class="fas fa-project-diagram"></i>
+                <span>Graph</span>
+            </button>
+            <button class="tab-btn" data-tab="browse">
+                <i class="fas fa-th-large"></i>
+                <span>Browse</span>
+            </button>
+        </nav>
+
+        <div class="agent-filter-container">
+            <select id="agent-filter" class="agent-filter-select" title="Filter by agent">
+                <option value="">All Agents</option>
+            </select>
+        </div>
+
+        <div class="search-container">
+            <i class="fas fa-search search-icon"></i>
+            <input type="text" id="search-input" placeholder="Search memories..." autocomplete="off">
+            <div id="search-results" class="search-dropdown"></div>
+        </div>
+
+        <div class="connection-status" id="connection-status" title="API Status">
+            <span class="status-dot"></span>
+            <span class="status-text">Connected</span>
+        </div>
+    </header>
+
+    <!-- ====================== OVERVIEW TAB ====================== -->
+    <section id="tab-overview" class="tab-content active">
+        <!-- Hero Stats -->
+        <div class="overview-hero">
+            <div class="stat-cards">
+                <div class="stat-card stat-card--facts">
+                    <div class="stat-card__icon"><i class="fas fa-brain"></i></div>
+                    <div class="stat-card__body">
+                        <span class="stat-card__value" data-counter="facts">0</span>
+                        <span class="stat-card__label">Memories</span>
+                    </div>
+                </div>
+                <div class="stat-card stat-card--entities">
+                    <div class="stat-card__icon"><i class="fas fa-user-circle"></i></div>
+                    <div class="stat-card__body">
+                        <span class="stat-card__value" data-counter="entities">0</span>
+                        <span class="stat-card__label">Entities</span>
+                    </div>
+                </div>
+                <div class="stat-card stat-card--episodes">
+                    <div class="stat-card__icon"><i class="fas fa-bookmark"></i></div>
+                    <div class="stat-card__body">
+                        <span class="stat-card__value" data-counter="episodes">0</span>
+                        <span class="stat-card__label">Episodes</span>
+                    </div>
+                </div>
+                <div class="stat-card stat-card--emotions">
+                    <div class="stat-card__icon"><i class="fas fa-heart"></i></div>
+                    <div class="stat-card__body">
+                        <span class="stat-card__value" data-counter="emotions">0</span>
+                        <span class="stat-card__label">Emotions</span>
+                    </div>
+                </div>
+                <div class="stat-card stat-card--relationships">
+                    <div class="stat-card__icon"><i class="fas fa-link"></i></div>
+                    <div class="stat-card__body">
+                        <span class="stat-card__value" data-counter="relationships">0</span>
+                        <span class="stat-card__label">Connections</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Explore Button -->
+        <div class="explore-cta">
+            <button id="btn-explore-graph" class="btn-explore">
+                <i class="fas fa-project-diagram"></i>
+                Explore the Graph
+            </button>
+        </div>
+
+        <!-- Content Grid -->
+        <div class="overview-grid">
+            <!-- Recent Memories -->
+            <div class="overview-section">
+                <h2 class="section-title">
+                    <i class="fas fa-clock"></i>
+                    Recent Memories
+                </h2>
+                <div id="recent-memories" class="memory-list">
+                    <div class="loading-placeholder">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Top Entities -->
+            <div class="overview-section">
+                <h2 class="section-title">
+                    <i class="fas fa-star"></i>
+                    Top Entities
+                </h2>
+                <div id="top-entities" class="entity-list">
+                    <div class="loading-placeholder">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Memory Growth -->
+            <div class="overview-section overview-section--wide">
+                <h2 class="section-title">
+                    <i class="fas fa-chart-bar"></i>
+                    Memory Growth
+                </h2>
+                <div id="memory-timeline" class="timeline-chart">
+                    <div class="loading-placeholder">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ====================== GRAPH TAB ====================== -->
+    <section id="tab-graph" class="tab-content">
+        <!-- Graph toolbar -->
+        <div class="graph-toolbar">
+            <button id="btn-reload" class="toolbar-btn" title="Reload graph">
+                <i class="fas fa-sync-alt"></i>
+            </button>
+            <button id="btn-layout" class="toolbar-btn" title="Run layout">
+                <i class="fas fa-expand-arrows-alt"></i>
+            </button>
+            <button id="btn-expand" class="toolbar-btn" title="Load more nodes">
+                <i class="fas fa-plus"></i>
+            </button>
+            <select id="filter-type" class="toolbar-select" title="Filter by type">
+                <option value="">All Types</option>
+                <option value="Entity">Entity</option>
+                <option value="Fact">Fact</option>
+                <option value="Episode">Episode</option>
+                <option value="Emotion">Emotion</option>
+                <option value="SessionState">Session</option>
+            </select>
+        </div>
+
+        <!-- Graph Container -->
+        <div id="graph-container"></div>
+
+        <!-- Zoom controls -->
+        <div class="zoom-controls">
+            <button id="btn-zoom-in" class="zoom-btn" title="Zoom in"><i class="fas fa-plus"></i></button>
+            <button id="btn-zoom-reset" class="zoom-btn" title="Reset zoom"><i class="fas fa-compress-arrows-alt"></i></button>
+            <button id="btn-zoom-out" class="zoom-btn" title="Zoom out"><i class="fas fa-minus"></i></button>
+        </div>
+
+        <!-- Graph Stats -->
+        <div class="graph-stats">
+            <span><i class="fas fa-circle" style="color:var(--accent-blue);font-size:8px"></i> <strong id="stat-visible">0</strong> nodes</span>
+            <span><i class="fas fa-minus" style="color:var(--text-muted);font-size:8px"></i> <strong id="stat-edges">0</strong> edges</span>
+        </div>
+
+        <!-- Legend -->
+        <div id="legend">
+            <button class="legend-item active" data-type="Entity">
+                <span class="legend-dot" style="background:var(--color-entity)"></span>Entity
+            </button>
+            <button class="legend-item active" data-type="Fact">
+                <span class="legend-dot" style="background:var(--color-fact)"></span>Fact
+            </button>
+            <button class="legend-item active" data-type="Episode">
+                <span class="legend-dot" style="background:var(--color-episode)"></span>Episode
+            </button>
+            <button class="legend-item active" data-type="Emotion">
+                <span class="legend-dot" style="background:var(--color-emotion)"></span>Emotion
+            </button>
+            <button class="legend-item active" data-type="SessionState">
+                <span class="legend-dot" style="background:var(--color-session)"></span>Session
+            </button>
+        </div>
+
+        <!-- Node Detail Sidebar -->
+        <div id="sidebar" class="hidden">
+            <div class="sidebar-topbar">
+                <button id="sidebar-close" title="Close"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="sidebar-content">
+                <!-- Header -->
+                <div class="sidebar-header">
+                    <div id="sidebar-type" class="sidebar-badge">—</div>
+                    <h2 id="sidebar-title">—</h2>
+                    <p id="sidebar-description" class="sidebar-description"></p>
+                </div>
+
+                <!-- Key facts -->
+                <div id="sidebar-details" class="sidebar-details"></div>
+
+                <!-- Connections -->
+                <div class="sidebar-section">
+                    <div class="sidebar-section-header">
+                        <i class="fas fa-project-diagram"></i>
+                        <span>Connections</span>
+                        <span id="sidebar-conn-count" class="sidebar-conn-count-badge"></span>
+                    </div>
+                    <div id="sidebar-connections"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ====================== BROWSE TAB ====================== -->
+    <section id="tab-browse" class="tab-content">
+        <div class="browse-header">
+            <div class="browse-filters">
+                <select id="browse-type-filter" class="browse-select">
+                    <option value="">All Types</option>
+                    <option value="Entity">Entity</option>
+                    <option value="Fact">Fact</option>
+                    <option value="Episode">Episode</option>
+                    <option value="Emotion">Emotion</option>
+                    <option value="SessionState">Session</option>
+                </select>
+                <select id="browse-sort" class="browse-select">
+                    <option value="connections">Most Connected</option>
+                    <option value="recent">Most Recent</option>
+                    <option value="alpha">Alphabetical</option>
+                </select>
+            </div>
+            <div class="browse-search">
+                <i class="fas fa-search"></i>
+                <input type="text" id="browse-search-input" placeholder="Filter memories...">
+            </div>
+        </div>
+        <div id="browse-grid" class="browse-grid">
+            <div class="loading-placeholder">Loading...</div>
+        </div>
+        <div class="browse-load-more">
+            <button id="btn-browse-more" class="btn-load-more" style="display:none">
+                <i class="fas fa-chevron-down"></i> Load More
+            </button>
+        </div>
+    </section>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay">
+        <div class="loader">
+            <div class="loader-ring"></div>
+            <div class="loader-text">Loading memories...</div>
+        </div>
+    </div>
+
+    <script src="/static/js/graph.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

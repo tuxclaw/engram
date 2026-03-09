@@ -1,22 +1,14 @@
-# Database
 .engram-db/
-
-# Python
+.engram-db.wal
+.memory-db/
+.processed_files.json
 __pycache__/
 *.pyc
-.venv/
-.venv-memory/
-*.egg-info/
-
-# Logs
+.venv*/
+node_modules/
+dashboard/static/js/vendor.bundle.js
+exported-sessions/
+entities/
 *.log
-
-# Exported sessions (user data)
-memory/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Env
-.env
+BRIEFING.md
+config.json

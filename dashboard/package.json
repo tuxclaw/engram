@@ -1,0 +1,20 @@
+{
+  "name": "engram-dashboard",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bundle-deps.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "esbuild": "^0.27.3",
+    "graphology": "^0.26.0",
+    "graphology-layout": "^0.6.1",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "playwright": "^1.58.2",
+    "sigma": "^3.0.2"
+  }
+}
