@@ -27,7 +27,7 @@ from collections import defaultdict
 import kuzu
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engram.schema import get_db, get_conn, get_stats, print_stats
+from engram.backend import get_db, get_conn, get_stats, print_stats
 
 
 # =========================================================

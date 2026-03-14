@@ -23,12 +23,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import kuzu
+
+CONTAMINATION_PATTERNS = [
+    r'"entities"\s*:\s*\[',
+    r'"relationships"\s*:\s*\[',
+    r'"facts"\s*:\s*\[',
+    r'"episode_summary"\s*:',
+    r'Conversation info \(untrusted metadata\):',
+    r'Sender \(untrusted metadata\):',
+    r'EXTERNAL_UNTRUSTED_CONTENT',
+    r'<think>',
+    r'You are a memory extraction system',
+    r'You are a knowledge extraction assistant',
+    r'\[TOOL_RESULT\]',
+    r'^\s*```json\s*\n\s*\{.*"entities"',
+]
+
+try:
+    import kuzu
+except ImportError:
+    kuzu = None  # Neo4j backend doesn't need kuzu
 
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
+from engram.backend import get_db, get_conn, init_schema, get_stats, print_stats
 
 # =========================================================
 # Configuration
@@ -47,7 +66,7 @@ def _load_config() -> dict:
 
 _CFG = _load_config()
 
-MEMORY_DIR = Path(os.path.expanduser(_CFG.get("memory_dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "exported-sessions"))))
+MEMORY_DIR = Path(os.path.expanduser(_CFG.get("memory_dir", "~/clawd/memory")))
 MAIN_AGENT_ID = _CFG.get("main_agent_id", "main")
 
 # Build agent workspace memory dirs from config
@@ -113,6 +132,21 @@ Rules:
 - Return ONLY valid JSON, no markdown formatting"""
 
 
+def normalize_entity_name(name: str) -> str:
+    """Normalize entity name to prevent duplicates like 'TheDev' vs 'The Dev'.
+    
+    Strips spaces, lowercases, removes common punctuation for ID generation.
+    The original display name is preserved on the entity node.
+    """
+    # Lowercase and strip
+    n = name.lower().strip()
+    # Remove spaces between words (so "The Dev" == "TheDev")
+    n = re.sub(r'\s+', '', n)
+    # Remove common trailing punctuation
+    n = re.sub(r'[._\-]+$', '', n)
+    return n
+
+
 def generate_id(prefix: str, content: str) -> str:
     """Generate a deterministic ID from content."""
     h = hashlib.sha256(content.encode()).hexdigest()[:12]
@@ -133,28 +167,43 @@ def save_processed_files(processed: dict):
         json.dump(processed, f, indent=2)
 
 
-def find_memory_files() -> list[Path]:
-    """Find all memory files that need processing across all memory directories."""
+def _iter_candidate_files(include_exported_sessions: bool = False) -> list[Path]:
+    """Return candidate source files in deterministic order."""
+    files = []
+
+    for f in sorted(MEMORY_DIR.glob("*.md")):
+        files.append(f)
+
+    for _agent_id, mem_dir in AGENT_WORKSPACE_MEMORY_DIRS.items():
+        if not mem_dir.exists():
+            continue
+        for f in sorted(mem_dir.glob("*.md")):
+            files.append(f)
+
+    if include_exported_sessions:
+        exported_dir = ENGRAM_DIR / "exported-sessions"
+        if exported_dir.exists():
+            for f in sorted(exported_dir.glob("*.md")):
+                files.append(f)
+
+    return files
+
+
+def find_memory_files(include_exported_sessions: bool = False) -> list[Path]:
+    """Find all memory files that need processing across all memory directories.
+
+    Default behavior is intentionally conservative: exported session dumps are
+    excluded unless explicitly requested for archive/backfill workflows.
+    """
     processed = get_processed_files()
     files = []
-    
-    # Main memory directory (Jarvis + session exports)
-    for f in sorted(MEMORY_DIR.glob("*.md")):
+
+    for f in _iter_candidate_files(include_exported_sessions=include_exported_sessions):
         mtime = str(f.stat().st_mtime)
         key = str(f)
         if key not in processed or processed[key] != mtime:
             files.append(f)
-    
-    # Agent workspace memory directories
-    for agent_id, mem_dir in AGENT_WORKSPACE_MEMORY_DIRS.items():
-        if not mem_dir.exists():
-            continue
-        for f in sorted(mem_dir.glob("*.md")):
-            mtime = str(f.stat().st_mtime)
-            key = str(f)
-            if key not in processed or processed[key] != mtime:
-                files.append(f)
-    
+
     return files
 
 
@@ -334,6 +383,74 @@ def _call_ollama(prompt: str) -> Optional[dict]:
         return parsed
 
 
+def classify_source(filepath: Path, text: str = "") -> dict:
+    """Classify source quality and contamination risk for first-pass memory hygiene.
+
+    This is intentionally heuristic and reviewable.
+    """
+    path_str = str(filepath).lower()
+    name = filepath.name.lower()
+    text_sample = (text or "")[:12000]
+
+    source_type = "memory"
+    memory_tier = "candidate"
+    contamination_flags = []
+    contamination_score = 0.0
+    quality_score = 0.7
+    retrievable = True
+
+    if "/exported-sessions/" in path_str:
+        source_type = "exported_session"
+        memory_tier = "archive"
+        quality_score = 0.2
+        contamination_score += 0.45
+    elif "/memory/" in path_str:
+        source_type = "memory"
+        memory_tier = "candidate"
+        quality_score = 0.65
+
+    if re.match(r"\d{4}-\d{2}-\d{2}(-[a-z0-9_-]+-[a-f0-9]+)?\.md$", name):
+        contamination_score += 0.05
+
+    for pattern in CONTAMINATION_PATTERNS:
+        if re.search(pattern, text_sample, re.IGNORECASE | re.DOTALL):
+            contamination_flags.append(pattern)
+
+    if contamination_flags:
+        contamination_score += min(0.45, 0.08 * len(contamination_flags))
+
+    lower_text = text_sample.lower()
+    if "session summary" in lower_text or "summary of" in lower_text:
+        contamination_score += 0.1
+    if "tool call" in lower_text or "tool output" in lower_text:
+        contamination_score += 0.12
+    if lower_text.count("```") >= 2:
+        contamination_score += 0.08
+
+    contamination_score = min(1.0, contamination_score)
+
+    if source_type == "memory" and contamination_score <= 0.2:
+        memory_tier = "canonical"
+        quality_score = max(quality_score, 0.9)
+    elif contamination_score >= 0.6:
+        memory_tier = "archive"
+        quality_score = min(quality_score, 0.15)
+        retrievable = False
+    else:
+        quality_score = max(0.05, quality_score - (contamination_score * 0.6))
+
+    return {
+        "source_type": source_type,
+        "memory_tier": memory_tier,
+        "quality_score": round(quality_score, 3),
+        "contamination_score": round(contamination_score, 3),
+        "contamination_flags": contamination_flags[:8],
+        "retrievable": retrievable,
+        "is_canonical": memory_tier == "canonical",
+        "is_candidate": memory_tier == "candidate",
+    }
+
+
 def extract_agent_from_filepath(filepath: Path) -> str:
     """Extract agent ID from memory file — checks workspace path first, then filename pattern.
     
@@ -362,17 +479,24 @@ def extract_agent_from_filepath(filepath: Path) -> str:
         # Everything else in main memory dir belongs to the main agent
         return MAIN_AGENT_ID
     
-    # Fall back to filename pattern for files from unknown locations
+    # Fall back to filename pattern for files from unknown locations (e.g. exported-sessions/)
     match = re.match(r'\d{4}-\d{2}-\d{2}-([a-zA-Z][a-zA-Z0-9_-]*)-[a-f0-9]+\.md$', filepath.name)
     if match:
-        return match.group(1)
+        agent_name = match.group(1).lower()
+        # Known agent IDs
+        if agent_name in AGENT_WORKSPACE_MEMORY_DIRS:
+            return agent_name
+        if agent_name == MAIN_AGENT_ID:
+            return MAIN_AGENT_ID
+        # Subagent names (tony, pepper, steve, bruce, etc.) → main agent
+        return MAIN_AGENT_ID
     
     return "shared"
 
 
 def store_extraction(conn: kuzu.Connection, extraction: dict, 
                      source_file: str, date_str: str, chunk_text_content: str,
-                     agent_id: str = "shared"):
+                     agent_id: str = "shared", source_meta: Optional[dict] = None):
     """Store extracted entities, relationships, facts, and emotions in the graph.
     
     Note: Kuzu reserves certain keywords (desc, type, etc.) so we use 
@@ -380,6 +504,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
     """
     now = datetime.now()
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    source_meta = source_meta or {}
     
     # Parse date for temporal context
     if date_str:
@@ -400,8 +525,15 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             "MERGE (e:Episode {id: $p_id}) "
             "SET e.content = $p_content, "
             "e.summary = $p_summary, "
-            "e.source = 'daily_log', "
+            "e.source = $p_source, "
             "e.source_file = $p_src, "
+            "e.source_type = $p_source_type, "
+            "e.memory_tier = $p_memory_tier, "
+            "e.quality_score = $p_quality, "
+            "e.contamination_score = $p_contam, "
+            "e.retrievable = $p_retrievable, "
+            "e.is_canonical = $p_is_canonical, "
+            "e.is_candidate = $p_is_candidate, "
             "e.occurred_at = timestamp($p_occ), "
             "e.importance = $p_imp, "
             "e.agent_id = $p_agent, "
@@ -411,8 +543,16 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 "p_content": chunk_text_content[:2000],
                 "p_summary": summary,
                 "p_src": source_file,
+                "p_source": source_meta.get("source_type", "memory"),
+                "p_source_type": source_meta.get("source_type", "memory"),
+                "p_memory_tier": source_meta.get("memory_tier", "candidate"),
+                "p_quality": source_meta.get("quality_score", 0.5),
+                "p_contam": source_meta.get("contamination_score", 0.0),
+                "p_retrievable": source_meta.get("retrievable", True),
+                "p_is_canonical": source_meta.get("is_canonical", False),
+                "p_is_candidate": source_meta.get("is_candidate", True),
                 "p_occ": episode_ts,
-                "p_imp": 0.5,
+                "p_imp": 0.7 if source_meta.get("is_canonical") else (0.45 if source_meta.get("is_candidate", True) else 0.15),
                 "p_agent": agent_id,
                 "p_now": now_str
             }
@@ -428,7 +568,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
         if not name:
             continue
         
-        eid = generate_id("ent", name.lower())
+        eid = generate_id("ent", normalize_entity_name(name))
         entity_ids[name] = eid
         
         try:
@@ -455,7 +595,8 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             # Link entity to episode
             conn.execute(
                 "MATCH (ent:Entity {id: $p_eid}), (ep:Episode {id: $p_epid}) "
-                "MERGE (ent)-[:MENTIONED_IN {created_at: timestamp($p_now)}]->(ep)",
+                "MERGE (ent)-[r:MENTIONED_IN]->(ep) "
+                "ON CREATE SET r.created_at = datetime($p_now)",
                 {"p_eid": eid, "p_epid": episode_id, "p_now": now_str}
             )
             
@@ -472,8 +613,8 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             continue
         
         # Ensure entities exist
-        from_id = entity_ids.get(from_name, generate_id("ent", from_name.lower()))
-        to_id = entity_ids.get(to_name, generate_id("ent", to_name.lower()))
+        from_id = entity_ids.get(from_name, generate_id("ent", normalize_entity_name(from_name)))
+        to_id = entity_ids.get(to_name, generate_id("ent", normalize_entity_name(to_name)))
         
         # Create entities if they don't exist yet
         for eid, ename in [(from_id, from_name), (to_id, to_name)]:
@@ -498,8 +639,9 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             if rel_type == "caused":
                 conn.execute(
                     "MATCH (a:Entity {id: $p_fid}), (b:Entity {id: $p_tid}) "
-                    "MERGE (a)-[:CAUSED {description: $p_desc, confidence: 0.7, "
-                    "valid_at: timestamp($p_vat), created_at: timestamp($p_now)}]->(b)",
+                    "MERGE (a)-[r:CAUSED]->(b) "
+                    "ON CREATE SET r.description = $p_desc, r.confidence = 0.7, "
+                    "r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
                     {
                         "p_fid": from_id, "p_tid": to_id,
                         "p_desc": rel.get("description", ""),
@@ -509,8 +651,9 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             elif rel_type == "part_of":
                 conn.execute(
                     "MATCH (a:Entity {id: $p_fid}), (b:Entity {id: $p_tid}) "
-                    "MERGE (a)-[:PART_OF {role: $p_role, "
-                    "valid_at: timestamp($p_vat), created_at: timestamp($p_now)}]->(b)",
+                    "MERGE (a)-[r:PART_OF]->(b) "
+                    "ON CREATE SET r.role = $p_role, "
+                    "r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
                     {
                         "p_fid": from_id, "p_tid": to_id,
                         "p_role": rel.get("description", ""),
@@ -520,8 +663,9 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             else:
                 conn.execute(
                     "MATCH (a:Entity {id: $p_fid}), (b:Entity {id: $p_tid}) "
-                    "MERGE (a)-[:RELATES_TO {relation_type: $p_rtype, description: $p_desc, "
-                    "strength: 0.5, valid_at: timestamp($p_vat), created_at: timestamp($p_now)}]->(b)",
+                    "MERGE (a)-[r:RELATES_TO {relation_type: $p_rtype}]->(b) "
+                    "ON CREATE SET r.description = $p_desc, "
+                    "r.strength = 0.5, r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
                     {
                         "p_fid": from_id, "p_tid": to_id,
                         "p_rtype": rel_type,
@@ -548,8 +692,13 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 "f.confidence = $p_conf, "
                 "f.valid_at = timestamp($p_vat), "
                 "f.agent_id = $p_agent, "
+                "f.source_type = $p_source_type, "
+                "f.memory_tier = $p_memory_tier, "
+                "f.quality_score = $p_quality, "
+                "f.contamination_score = $p_contam, "
+                "f.retrievable = $p_retrievable, "
                 "f.updated_at = timestamp($p_now), "
-                "f.importance = CASE WHEN f.importance IS NULL THEN 0.5 ELSE f.importance END, "
+                "f.importance = CASE WHEN f.importance IS NULL THEN $p_initial_importance ELSE f.importance END, "
                 "f.access_count = CASE WHEN f.access_count IS NULL THEN 0 ELSE f.access_count END, "
                 "f.source_episode = CASE WHEN f.source_episode IS NULL THEN $p_epid ELSE f.source_episode END, "
                 "f.created_at = CASE WHEN f.created_at IS NULL THEN timestamp($p_now) ELSE f.created_at END",
@@ -560,6 +709,12 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "p_conf": fact.get("confidence", 0.8),
                     "p_vat": episode_ts,
                     "p_agent": agent_id,
+                    "p_source_type": source_meta.get("source_type", "memory"),
+                    "p_memory_tier": source_meta.get("memory_tier", "candidate"),
+                    "p_quality": source_meta.get("quality_score", 0.5),
+                    "p_contam": source_meta.get("contamination_score", 0.0),
+                    "p_retrievable": source_meta.get("retrievable", True),
+                    "p_initial_importance": 0.75 if source_meta.get("is_canonical") else (0.5 if source_meta.get("is_candidate", True) else 0.12),
                     "p_epid": episode_id,
                     "p_now": now_str
                 }
@@ -568,19 +723,19 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             # Link fact to episode
             conn.execute(
                 "MATCH (f:Fact {id: $p_fid}), (ep:Episode {id: $p_epid}) "
-                "MERGE (f)-[:DERIVED_FROM {extraction_method: 'llm', "
-                "created_at: timestamp($p_now)}]->(ep)",
+                "MERGE (f)-[r:DERIVED_FROM]->(ep) "
+                "ON CREATE SET r.extraction_method = 'llm', r.created_at = datetime($p_now)",
                 {"p_fid": fid, "p_epid": episode_id, "p_now": now_str}
             )
             
             # Link fact to entities it's about
             for about_name in fact.get("about", []):
-                about_id = entity_ids.get(about_name, generate_id("ent", about_name.lower()))
+                about_id = entity_ids.get(about_name, generate_id("ent", normalize_entity_name(about_name)))
                 try:
                     conn.execute(
                         "MATCH (f:Fact {id: $p_fid}), (e:Entity {id: $p_eid}) "
-                        "MERGE (f)-[:ABOUT {aspect: $p_asp, "
-                        "created_at: timestamp($p_now)}]->(e)",
+                        "MERGE (f)-[r:ABOUT]->(e) "
+                        "ON CREATE SET r.aspect = $p_asp, r.created_at = datetime($p_now)",
                         {
                             "p_fid": fid, "p_eid": about_id,
                             "p_asp": fact.get("category", "context"),
@@ -624,8 +779,8 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             # Link emotion to episode
             conn.execute(
                 "MATCH (ep:Episode {id: $p_epid}), (em:Emotion {id: $p_emid}) "
-                "MERGE (ep)-[:EPISODE_EVOKES {intensity: $p_int, "
-                "created_at: timestamp($p_now)}]->(em)",
+                "MERGE (ep)-[r:EPISODE_EVOKES]->(em) "
+                "ON CREATE SET r.intensity = $p_int, r.created_at = datetime($p_now)",
                 {
                     "p_epid": episode_id, "p_emid": emid,
                     "p_int": emotion.get("arousal", 0.5),
@@ -635,12 +790,13 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             
             # Link emotion to related entities
             for about_name in emotion.get("about", []):
-                about_id = entity_ids.get(about_name, generate_id("ent", about_name.lower()))
+                about_id = entity_ids.get(about_name, generate_id("ent", normalize_entity_name(about_name)))
                 try:
                     conn.execute(
                         "MATCH (e:Entity {id: $p_eid}), (em:Emotion {id: $p_emid}) "
-                        "MERGE (e)-[:ENTITY_EVOKES {context: $p_ctx, intensity: $p_int, "
-                        "valid_at: timestamp($p_vat), created_at: timestamp($p_now)}]->(em)",
+                        "MERGE (e)-[r:ENTITY_EVOKES]->(em) "
+                        "ON CREATE SET r.context = $p_ctx, r.intensity = $p_int, "
+                        "r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
                         {
                             "p_eid": about_id, "p_emid": emid,
                             "p_ctx": emotion.get("context", ""),
@@ -699,11 +855,13 @@ def ingest_file(conn: kuzu.Connection, filepath: Path, force: bool = False):
 def _extract_file(filepath: Path) -> dict:
     """Extract entities from a single file (thread-safe, no DB access).
     Returns dict with filepath, agent_id, date_str, and list of (chunk, extraction) pairs."""
+    text = ""
     result = {
         "filepath": filepath,
         "agent_id": extract_agent_from_filepath(filepath),
         "date_str": extract_date_from_filename(filepath),
         "extractions": [],
+        "source_meta": {},
         "error": None
     }
     
@@ -711,6 +869,8 @@ def _extract_file(filepath: Path) -> dict:
         text = filepath.read_text(encoding="utf-8")
         if not text.strip():
             return result
+
+        result["source_meta"] = classify_source(filepath, text)
         
         chunks = chunk_text(text)
         
@@ -733,7 +893,8 @@ def _extract_file(filepath: Path) -> dict:
     return result
 
 
-def ingest_all(force: bool = False, limit: int = None, workers: int = 6):
+def ingest_all(force: bool = False, limit: int = None, workers: int = 6,
+               include_exported_sessions: bool = False):
     """Ingest all unprocessed memory files with parallel LLM extraction."""
     db = get_db()
     conn = get_conn(db)
@@ -741,7 +902,7 @@ def ingest_all(force: bool = False, limit: int = None, workers: int = 6):
     # Ensure schema exists
     init_schema(conn)
     
-    files = find_memory_files()
+    files = find_memory_files(include_exported_sessions=include_exported_sessions)
     
     if not files:
         print("✅ All memory files already processed")
@@ -787,7 +948,8 @@ def ingest_all(force: bool = False, limit: int = None, workers: int = 6):
                         store_extraction(
                             conn, extraction, filepath.name,
                             result["date_str"], chunk,
-                            agent_id=result["agent_id"]
+                            agent_id=result["agent_id"],
+                            source_meta=result.get("source_meta") or {}
                         )
                 
                 # Mark as processed
@@ -813,6 +975,8 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, help="Max files to process")
     parser.add_argument("--workers", type=int, default=6, help="Parallel workers (default: 6)")
     parser.add_argument("--file", type=str, help="Process a specific file")
+    parser.add_argument("--include-exported-sessions", action="store_true",
+                        help="Also ingest engram/exported-sessions/*.md archive dumps")
     args = parser.parse_args()
     
     if args.force:
@@ -828,4 +992,9 @@ if __name__ == "__main__":
         stats = get_stats(conn)
         print_stats(stats)
     else:
-        ingest_all(force=args.force, limit=args.limit, workers=args.workers)
+        ingest_all(
+            force=args.force,
+            limit=args.limit,
+            workers=args.workers,
+            include_exported_sessions=args.include_exported_sessions,
+        )

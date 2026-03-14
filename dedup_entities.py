@@ -17,7 +17,7 @@ import re
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
+from engram.backend import get_db, get_conn, init_schema, get_stats, print_stats
 
 
 def normalize_name(name: str) -> str:
@@ -25,9 +25,8 @@ def normalize_name(name: str) -> str:
     n = name.lower().strip()
     # Collapse separators
     n = re.sub(r'[-_\s]+', ' ', n)
-    # Known aliases
-    # Add custom name normalizations here if needed
-    # n = n.replace('the dev', 'thedev')
+    # Collapse spaced variants (e.g., "The Dev" → "thedev")
+    n = re.sub(r'\s+', '', n)
     return n
 
 

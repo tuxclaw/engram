@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  engram:
+    build: .
+    ports:
+      - "3456:3456"
+    volumes:
+      - engram-data:/data
+    environment:
+      - ENGRAM_PORT=3456
+volumes:
+  engram-data:

@@ -27,7 +27,8 @@ fi
 
 # Remove old engram ingest cron, add new one
 crontab -l 2>/dev/null | grep -v "engram.*ingest\|engram.*briefing" > /tmp/crontab.tmp || true
-echo "${CRON_EXPR} cd /home/thedev/clawd && .venv-memory/bin/python engram/export_sessions.py >> /tmp/engram-export.log 2>&1 && .venv-memory/bin/python engram/engram.py ingest >> /tmp/engram-ingest.log 2>&1 && .venv-memory/bin/python engram/engram.py briefing > BRIEFING.md 2>&1" >> /tmp/crontab.tmp
+WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+echo "${CRON_EXPR} cd ${WORKSPACE_DIR} && .venv-memory/bin/python engram/export_sessions.py >> /tmp/engram-export.log 2>&1 && .venv-memory/bin/python engram/engram.py ingest >> /tmp/engram-ingest.log 2>&1 && .venv-memory/bin/python engram/engram.py briefing > BRIEFING.md 2>&1" >> /tmp/crontab.tmp
 crontab /tmp/crontab.tmp
 rm /tmp/crontab.tmp
 

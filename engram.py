@@ -29,7 +29,7 @@ def main():
     
     if command == "search":
         from engram.query import unified_search, print_results
-        from engram.schema import get_db, get_conn
+        from engram.backend import get_db, get_conn
         if len(sys.argv) < 3:
             print("Usage: engram search <query>")
             return
@@ -41,7 +41,7 @@ def main():
     
     elif command == "entity":
         from engram.query import get_entity_context, print_entity_context
-        from engram.schema import get_db, get_conn
+        from engram.backend import get_db, get_conn
         if len(sys.argv) < 3:
             print("Usage: engram entity <name>")
             return
@@ -53,7 +53,7 @@ def main():
     
     elif command == "briefing":
         from engram.briefing import generate_briefing, save_briefing
-        from engram.schema import get_db, get_conn
+        from engram.backend import get_db, get_conn
         db = get_db(read_only=True)
         conn = get_conn(db)
         briefing = generate_briefing(conn)
@@ -62,7 +62,7 @@ def main():
             save_briefing(briefing)
     
     elif command == "stats":
-        from engram.schema import get_db, get_conn, get_stats, print_stats
+        from engram.backend import get_db, get_conn, get_stats, print_stats
         db = get_db(read_only=True)
         conn = get_conn(db)
         stats = get_stats(conn)
@@ -70,7 +70,7 @@ def main():
     
     elif command == "health":
         from engram.consolidate import health_report
-        from engram.schema import get_db, get_conn
+        from engram.backend import get_db, get_conn
         import json
         db = get_db(read_only=True)
         conn = get_conn(db)
@@ -87,7 +87,7 @@ def main():
             idx = sys.argv.index("--file")
             if idx + 1 < len(sys.argv):
                 from engram.ingest import ingest_file
-                from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
+                from engram.backend import get_db, get_conn, init_schema, get_stats, print_stats
                 from pathlib import Path
                 db = get_db()
                 conn = get_conn(db)
@@ -104,7 +104,7 @@ def main():
             print("Usage: engram session save|restore|list")
             return
         subcmd = sys.argv[2]
-        from engram.schema import get_db, get_conn
+        from engram.backend import get_db, get_conn
         
         if subcmd == "save":
             from engram.session import save_session_state

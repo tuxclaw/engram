@@ -21,7 +21,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-import kuzu
+try:
+    import kuzu
+except ImportError:
+    kuzu = None
 
 # =========================================================
 # Importance Tier Weights (for result ordering)
@@ -41,7 +44,7 @@ def _tier_weight(importance: float) -> float:
     return 0.4
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engram.schema import get_db, get_conn, get_stats, print_stats
+from engram.backend import get_db, get_conn, get_stats, print_stats
 
 
 # =========================================================
@@ -104,22 +107,32 @@ def search_entities(conn: kuzu.Connection, query: str, limit: int = 10,
         result = conn.execute(
             "MATCH (e:Entity) "
             "WHERE (lower(e.name) CONTAINS lower($p_q) OR lower(e.description) CONTAINS lower($p_q))"
+            " AND coalesce(e.retrievable, true) = true"
             + agent_filter +
-            " RETURN e.id, e.name, e.entity_type, e.description, e.importance, e.access_count "
-            "ORDER BY e.importance DESC LIMIT $p_lim",
+            " RETURN e.id, e.name, e.entity_type, e.description, e.importance, e.access_count, e.memory_tier, e.quality_score, e.contamination_score, e.retrievable "
+            "ORDER BY coalesce(e.is_canonical, false) DESC, coalesce(e.quality_score, e.importance, 0) DESC, e.importance DESC LIMIT $p_lim",
             params
         )
         while result.has_next():
             row = result.get_next()
             results.append({
                 "id": row[0], "name": row[1], "type": row[2],
-                "description": row[3], "importance": row[4], "access_count": row[5]
+                "description": row[3], "importance": row[4], "access_count": row[5],
+                "memory_tier": row[6], "quality_score": row[7], "contamination_score": row[8], "retrievable": row[9]
             })
     except Exception as e:
         print(f"Entity search error: {e}")
 
-    # Apply tier-weighted sort (Core memories bubble up)
-    results.sort(key=lambda r: _tier_weight(r.get("importance", 0.5)) * (r.get("importance") or 0.5), reverse=True)
+    # Apply tier-weighted sort (Core memories bubble up), but prefer cleaner canonical memory first
+    results.sort(
+        key=lambda r: (
+            1 if r.get("memory_tier") == "canonical" else (0 if r.get("memory_tier") == "candidate" else -1),
+            (r.get("quality_score") or 0),
+            -1 * (r.get("contamination_score") or 0),
+            _tier_weight(r.get("importance", 0.5)) * (r.get("importance") or 0.5),
+        ),
+        reverse=True,
+    )
 
     # Reinforce accessed nodes (non-blocking)
     if reinforce and results:
@@ -146,22 +159,33 @@ def search_facts(conn: kuzu.Connection, query: str, limit: int = 10,
         result = conn.execute(
             "MATCH (f:Fact) "
             "WHERE lower(f.content) CONTAINS lower($p_q)"
+            " AND coalesce(f.retrievable, true) = true"
             + agent_filter +
-            " RETURN f.id, f.content, f.category, f.confidence, f.importance, f.valid_at "
-            "ORDER BY f.importance DESC LIMIT $p_lim",
+            " RETURN f.id, f.content, f.category, f.confidence, f.importance, f.valid_at, f.memory_tier, f.quality_score, f.contamination_score, f.retrievable, f.source_type, f.created_at "
+            "ORDER BY coalesce(f.is_canonical, false) DESC, coalesce(f.quality_score, f.importance, 0) DESC, f.importance DESC LIMIT $p_lim",
             params
         )
         while result.has_next():
             row = result.get_next()
             results.append({
                 "id": row[0], "content": row[1], "category": row[2],
-                "confidence": row[3], "importance": row[4], "valid_at": str(row[5])
+                "confidence": row[3], "importance": row[4], "valid_at": str(row[5]),
+                "memory_tier": row[6], "quality_score": row[7], "contamination_score": row[8], "retrievable": row[9],
+                "source_type": row[10] if len(row) > 10 else None, "created_at": row[11] if len(row) > 11 else None
             })
     except Exception as e:
         print(f"Fact search error: {e}")
 
-    # Apply tier-weighted sort
-    results.sort(key=lambda r: _tier_weight(r.get("importance", 0.5)) * (r.get("importance") or 0.5), reverse=True)
+    # Apply tier-weighted sort, but prefer cleaner canonical memory first
+    results.sort(
+        key=lambda r: (
+            1 if r.get("memory_tier") == "canonical" else (0 if r.get("memory_tier") == "candidate" else -1),
+            (r.get("quality_score") or 0),
+            -1 * (r.get("contamination_score") or 0),
+            _tier_weight(r.get("importance", 0.5)) * (r.get("importance") or 0.5),
+        ),
+        reverse=True,
+    )
 
     # Reinforce accessed facts (non-blocking)
     if reinforce and results:
@@ -183,16 +207,18 @@ def search_episodes(conn: kuzu.Connection, query: str, limit: int = 10, agent_id
         result = conn.execute(
             "MATCH (ep:Episode) "
             "WHERE (lower(ep.summary) CONTAINS lower($p_q) OR lower(ep.content) CONTAINS lower($p_q))"
+            " AND coalesce(ep.retrievable, true) = true"
             + agent_filter +
-            " RETURN ep.id, ep.summary, ep.source_file, ep.occurred_at, ep.importance "
-            "ORDER BY ep.occurred_at DESC LIMIT $p_lim",
+            " RETURN ep.id, ep.summary, ep.source_file, ep.occurred_at, ep.importance, ep.memory_tier, ep.quality_score, ep.contamination_score, ep.retrievable "
+            "ORDER BY coalesce(ep.is_canonical, false) DESC, coalesce(ep.quality_score, ep.importance, 0) DESC, ep.occurred_at DESC LIMIT $p_lim",
             params
         )
         while result.has_next():
             row = result.get_next()
             results.append({
                 "id": row[0], "summary": row[1], "source_file": row[2],
-                "occurred_at": str(row[3]), "importance": row[4]
+                "occurred_at": str(row[3]), "importance": row[4],
+                "memory_tier": row[5], "quality_score": row[6], "contamination_score": row[7], "retrievable": row[8]
             })
     except Exception as e:
         print(f"Episode search error: {e}")

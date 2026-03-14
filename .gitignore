@@ -1,14 +1,42 @@
-.engram-db/
-.engram-db.wal
+# Database (large, local-only)
+.engram-db
 .memory-db/
+neo4j-data/
+neo4j-logs/
+
+# Runtime state (regenerated)
 .processed_files.json
-__pycache__/
-*.pyc
-.venv*/
-node_modules/
-dashboard/static/js/vendor.bundle.js
+.processed_files.json.*
+.health-report.json
 exported-sessions/
 entities/
-*.log
-BRIEFING.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-memory/
+*.egg-info/
+
+# Secrets (use env vars or config.json from config.json.example)
 config.json
+
+# Live memory sidecar (runtime)
+.engram-live-memory/
+
+# Logs
+*.log
+
+# Exported sessions / memory (user data)
+memory/
+
+# Dashboard build
+dashboard/node_modules/
+dashboard/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env

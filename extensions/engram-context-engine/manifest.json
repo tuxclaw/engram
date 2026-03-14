@@ -1,0 +1,6 @@
+{
+  "id": "engram-context-engine",
+  "name": "Engram Context Engine",
+  "version": "0.1.0",
+  "kind": "context-engine"
+}
