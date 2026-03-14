@@ -10,7 +10,7 @@ import glob
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
+from engram.backend import get_db, get_conn, init_schema, get_stats, print_stats
 from engram.ingest import find_memory_files, ingest_file, get_processed_files, save_processed_files
 from pathlib import Path
 

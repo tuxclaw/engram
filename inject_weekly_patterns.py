@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram.schema import get_db, get_conn, init_schema, get_stats, print_stats
+from engram.backend import get_db, get_conn, init_schema, get_stats, print_stats
 from engram.ingest import store_extraction, generate_id
 
 db = get_db()

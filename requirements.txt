@@ -1,2 +1,2 @@
-kuzu>=0.11.0
+# Engram MCP Server Dependencies
 mcp>=1.0.0

@@ -1,0 +1,32 @@
+{
+  "model": "grok-3-mini-fast",
+  "ingest_interval_minutes": 5,
+  "max_concurrent_chunks": 10,
+  "sessions_dir": "~/.openclaw/agents",
+  "memory_dir": "~/clawd/memory",
+  "notes": {
+    "model": "xAI model to use for extraction: grok-3-mini-fast (default), grok-3-fast, etc.",
+    "xai_api_key": "Set here or via XAI_API_KEY env var. If using OpenClaw, auto-detected from openclaw.json.",
+    "ingest_interval_minutes": "How often the cron runs. Change this, then run: engram/update-cron.sh",
+    "max_concurrent_chunks": "Parallel API calls per file (higher = faster, more API usage)"
+  },
+  "main_agent_id": "main",
+  "agent_workspaces": {
+    "loopfans": "~/.openclaw/workspace-loopfans/memory",
+    "sillyfarms": "~/.openclaw/workspace-sillyfarms/memory"
+  },
+  "ingest_workers": 10,
+  "context_engine": {
+    "workspace_root": "/home/youruser/clawd",
+    "engram_dir": "/home/youruser/clawd/engram",
+    "python_bin": "/home/youruser/clawd/.venv-memory/bin/python",
+    "agents_dir": "/home/youruser/.openclaw/agents"
+  },
+  "backend": "neo4j",
+  "neo4j": {
+    "uri": "bolt://localhost:7687",
+    "user": "neo4j",
+    "password": "CHANGE_ME"
+  },
+  "xai_api_key": "CHANGE_ME"
+}
