@@ -1,8 +1,38 @@
 # Engram — Temporal Knowledge Graph Memory
 
-Engram is a self-hosted memory system for OpenClaw agents. It ingests session transcripts, extracts entities/facts/relationships/emotions using an LLM, and stores them in an embedded graph database (Kùzu). Agents query it for context, history, and relationship mapping.
+Engram is a self-hosted memory system for OpenClaw agents. It extracts entities, facts, and relationships from conversations using an LLM, stores them in a Neo4j graph database, and injects relevant memories into every conversation turn via an OpenClaw plugin.
 
-**What it gives you:** Persistent memory across sessions. Your agent wakes up knowing what happened yesterday, who it talked to, what decisions were made, and how the user felt about it.
+**What it gives you:** Persistent memory across sessions and channels. Your agent wakes up knowing what happened yesterday, who it talked to, what decisions were made, and what preferences were expressed — automatically, per-agent, with no manual lookups.
+
+---
+
+## Architecture Overview
+
+```
+User message arrives
+        │
+        ▼
+  OpenClaw Gateway
+        │
+        ├── assemble() ─── Engram plugin queries Neo4j ──► injects relevant memories into prompt
+        │
+        ▼
+  LLM generates response
+        │
+        ▼
+  afterTurn() ─── Engram plugin extracts facts from user message
+        │
+        ├── Regex fast path (~50-100ms) ──► writes to Neo4j
+        │
+        └── LLM fallback (async, ~7s) ──► writes to Neo4j (if regex found nothing)
+        │
+        ▼
+  Hourly cron ─── batch ingest from memory/*.md files ──► enriches graph
+```
+
+**Two memory paths run in parallel:**
+1. **Live write-through** — facts extracted and stored on every user turn
+2. **Batch pipeline** — hourly cron ingests memory files, enriches and promotes facts
 
 ---
 
@@ -11,324 +41,355 @@ Engram is a self-hosted memory system for OpenClaw agents. It ingests session tr
 ### 1. Prerequisites
 
 - **Python 3.10+**
-- **OpenClaw** running with at least one LLM provider configured (any model works — Grok, Haiku, Sonnet, Ollama, etc.)
-- **OpenClaw chat completions endpoint enabled** — check your `~/.openclaw/openclaw.json`:
-  ```json
-  {
-    "gateway": {
-      "http": {
-        "endpoints": {
-          "chatCompletions": { "enabled": true }
-        }
-      }
-    }
-  }
-  ```
+- **Neo4j** (Community Edition, via Docker or standalone)
+- **OpenClaw** running with at least one LLM provider
+- **xAI API key** (for extraction model — grok-3-mini-fast recommended)
 
 ### 2. Install
 
 ```bash
-# Clone or copy the engram/ directory into your workspace
-# Example: ~/clawd/engram/
+# Clone the repo
+git clone https://github.com/Atomlaunch/engram.git
+cd engram
 
 # Create a Python virtual environment
-cd ~/clawd
 python3 -m venv .venv-memory
 source .venv-memory/bin/activate
 
 # Install dependencies
-pip install kuzu mcp
+pip install -r requirements.txt
 ```
 
-### 3. Initialize the database
+### 3. Start Neo4j
 
 ```bash
-cd ~/clawd
-source .venv-memory/bin/activate
-python engram/engram.py search "test"
-# This creates .engram-db/ on first run
+# Using Docker (recommended):
+docker-compose up -d
+
+# This starts Neo4j on:
+#   bolt://localhost:7687
+#   http://localhost:7474 (browser)
 ```
+
+Or install Neo4j standalone and start it manually.
 
 ### 4. Configure
 
-Edit `engram/config.json`:
-
-```json
-{
-  "model": "grok",
-  "llm_mode": "openclaw",
-  "ingest_interval_minutes": 60,
-  "max_concurrent_chunks": 5,
-  "openclaw_port": null,
-  "openclaw_token": null,
-  "sessions_dir": "~/.openclaw/agents",
-  "memory_dir": "~/clawd/memory"
-}
+```bash
+cp config.json.example config.json
+# Edit config.json with your settings
 ```
+
+Key fields in `config.json`:
 
 | Field | What it does | Default |
 |-------|-------------|---------|
-| `model` | OpenClaw model alias for extraction | `grok` |
-| `llm_mode` | `openclaw` (gateway) or `xai` (direct API) | `openclaw` |
-| `ingest_interval_minutes` | How often the cron runs | `60` |
-| `max_concurrent_chunks` | Parallel API calls per file | `5` |
-| `openclaw_port` | Gateway port (`null` = auto-detect) | `null` |
-| `openclaw_token` | Gateway auth token (`null` = auto-detect) | `null` |
-| `sessions_dir` | Where OpenClaw stores session JSONL files | `~/.openclaw/agents` |
-| `memory_dir` | Where exported markdown files go | `~/clawd/memory` |
-
-Port and token are auto-detected from `~/.openclaw/openclaw.json` if left as `null`.
-
-The `model` field accepts any alias your OpenClaw instance recognizes: `grok`, `haiku`, `sonnet`, `opus`, `qwen-local`, etc.
+| `model` | xAI model for extraction | `grok-3-mini-fast` |
+| `xai_api_key` | xAI API key (or set `XAI_API_KEY` env var) | — |
+| `backend` | Graph database backend | `neo4j` |
+| `neo4j.uri` | Neo4j connection URI | `bolt://localhost:7687` |
+| `neo4j.user` | Neo4j username | `neo4j` |
+| `neo4j.password` | Neo4j password | — |
+| `sessions_dir` | Where OpenClaw stores session files | `~/.openclaw/agents` |
+| `memory_dir` | Where exported markdown memory files go | `~/clawd/memory` |
+| `main_agent_id` | Primary agent ID | `main` |
+| `agent_workspaces` | Map of agent IDs to their memory dirs | `{}` |
+| `ingest_interval_minutes` | How often the cron pipeline runs | `5` |
+| `max_concurrent_chunks` | Parallel LLM calls per file during ingest | `10` |
 
 ### 5. Run the pipeline manually (first time)
 
 ```bash
-cd ~/clawd
 source .venv-memory/bin/activate
 
 # Step 1: Export OpenClaw sessions to markdown
-python engram/export_sessions.py
+python export_sessions.py
 
 # Step 2: Ingest markdown into the knowledge graph
-python engram/engram.py ingest
+python engram.py ingest
 
 # Step 3: Generate a briefing
-python engram/engram.py briefing > BRIEFING.md
+python engram.py briefing > BRIEFING.md
 ```
 
-**Note:** The first full ingest takes a while — each file is chunked and sent to the LLM for entity extraction. A workspace with 70+ sessions takes ~30-60 minutes serially. Subsequent runs only process new files.
+**Note:** First full ingest takes a while — each file is chunked and sent to the LLM for extraction. Subsequent runs only process new files.
 
 ### 6. Set up the cron (automated)
 
 ```bash
-bash engram/update-cron.sh
+bash update-cron.sh
 ```
 
-This installs a cron job that runs the full pipeline (export → ingest → briefing) at the interval specified in `config.json`. Default: every hour.
+Installs a cron job that runs the full pipeline (export → ingest → briefing) at the interval in `config.json`.
 
-To change the interval, edit `config.json` and re-run `update-cron.sh`.
+### 7. Install the Context Engine plugin
 
-### 7. Start the HTTP API server
+Copy the plugin into your OpenClaw extensions directory:
 
 ```bash
-# Using pm2 (recommended):
-pm2 start .venv-memory/bin/python --name engram-http -- engram/http_server.py
-pm2 save
-
-# Or run directly:
-source .venv-memory/bin/activate
-python engram/http_server.py
+cp -r extensions/engram-context-engine/ /path/to/your/workspace/extensions/
 ```
 
-The server runs on port **3456** by default. Set `ENGRAM_PORT` env var to change it.
+Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
+
+```json
+{
+  "plugins": {
+    "allow": ["engram-context-engine"],
+    "load": {
+      "paths": ["/path/to/your/workspace/extensions"]
+    },
+    "slots": {
+      "contextEngine": "engram-context-engine"
+    },
+    "entries": {
+      "engram-context-engine": {
+        "enabled": true,
+        "config": {
+          "workspaceRoot": "/path/to/your/workspace",
+          "engramDir": "/path/to/your/workspace/engram",
+          "pythonBin": "/path/to/your/workspace/.venv-memory/bin/python",
+          "topK": 8,
+          "maxChars": 6000,
+          "includeSystemPromptAddition": true,
+          "storeAssistantMessages": true,
+          "storeUserMessages": true,
+          "ownsCompaction": true
+        }
+      }
+    }
+  }
+}
+```
+
+Restart OpenClaw. The plugin will:
+- Inject relevant memories into every conversation turn
+- Extract and store new facts from every user message
+- Handle session compaction with durable memory flush
+
+### 8. Multi-agent setup (optional)
+
+For multiple agents with isolated memory, add agent workspaces to `config.json`:
+
+```json
+{
+  "main_agent_id": "main",
+  "agent_workspaces": {
+    "loopfans": "~/.openclaw/workspace-loopfans/memory",
+    "sillyfarms": "~/.openclaw/workspace-sillyfarms/memory"
+  }
+}
+```
+
+Each agent's facts are scoped by `agent_id` — no cross-agent leakage.
 
 ---
 
-## Usage
+## Context Engine Plugin
 
-### CLI
+The plugin (`extensions/engram-context-engine/`) is the core integration with OpenClaw.
+
+### How it works
+
+**On every turn (`assemble()`):**
+1. Extracts search terms from the last 6 messages
+2. Queries Neo4j for matching entities, facts, and episodes
+3. Formats results as bullet points
+4. Injects them as `systemPromptAddition` in the prompt
+
+**After every turn (`afterTurn()`):**
+1. Extracts facts from user messages via regex patterns
+2. If regex finds nothing, fires async LLM extraction (non-blocking)
+3. Writes facts to Neo4j with `source_type: "live_turn"` or `"live_llm"`
+4. Deduplicates against existing facts
+
+**On compaction (`compact()`):**
+1. Splits transcript into older + recent messages
+2. Extracts durable memories from older messages
+3. Writes compaction summary to `memory/*.md` for cron pipeline
+4. Returns compacted message history
+
+### What gets extracted (regex patterns)
+
+| Pattern | Example | Category |
+|---------|---------|----------|
+| `X is/was/has Y` | "TheDev is a software engineer" | attribute |
+| `X said/told/mentioned Y` | "Tom said the API is ready" | reported |
+| `X fixed/deployed/built Y` | "Jarvis built the dashboard" | action |
+| `problem was/root cause is X` | "root cause was a null pointer" | diagnosis |
+| `I love/hate/like/prefer X` | "I prefer dark mode" | preference |
+| `I'm going to/planning to X` | "I'm going to refactor the API" | decision |
+
+### Token overhead
+
+Typical injection per turn: **~300-400 tokens** (12 bullets, ~130 chars each).
+That's **~0.04%** of a 1M context window. Lean.
+
+---
+
+## CLI Usage
 
 ```bash
-cd ~/clawd && source .venv-memory/bin/activate
+source .venv-memory/bin/activate
 
 # Search the knowledge graph
-python engram/engram.py search "dashboard voice chat"
+python engram.py search "dashboard voice chat"
 
 # Get a full briefing
-python engram/engram.py briefing
+python engram.py briefing
 
 # Ingest new files
-python engram/engram.py ingest
+python engram.py ingest
 
-# Run overnight consolidation (merges duplicate entities, strengthens patterns)
-python engram/engram.py dream
+# Run overnight consolidation
+python engram.py dream
 ```
 
-### HTTP API
+### Context Query CLI (used by plugin)
 
-All endpoints are on `http://localhost:3456` (or your configured port).
-
-#### `GET /health`
-```json
-{"ok": true, "nodes": 2846, "relationships": 8116}
-```
-
-#### `GET /stats`
-Returns counts by node and relationship type.
-
-#### `GET /briefing`
-Full session briefing with recent activity, key entities, knowledge, and emotional context. Use this to give your agent startup context.
-
-#### `POST /search`
 ```bash
-curl -X POST http://localhost:3456/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "dashboard", "limit": 5}'
-```
-Returns matching entities, facts, and episodes.
+# Query memories
+python context_query.py query "search terms" --agent main --limit 8 --json
 
-#### `POST /entity`
-```bash
-curl -X POST http://localhost:3456/entity \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Jarvis"}'
-```
-Returns the entity with all relationships, facts, and episodes.
+# Store a fact manually
+python context_query.py store --fact "User prefers dark mode" --agent main
 
-#### `POST /recent`
-```bash
-curl -X POST http://localhost:3456/recent \
-  -H "Content-Type: application/json" \
-  -d '{"hours": 24, "limit": 10}'
+# Store live turn facts (called by plugin automatically)
+python context_query.py store_live --text "message text" --agent main --session sess123
+
+# LLM-based extraction (called by plugin as fallback)
+python context_query.py extract_llm --text "message text" --agent main --session sess123
 ```
-Returns recent episodes within the time window.
 
 ---
 
-## How it works
+## HTTP API
 
-### The Pipeline
-
-```
-OpenClaw Sessions (JSONL)
-        │
-        ▼
-  export_sessions.py    ← Converts JSONL → clean markdown
-        │
-        ▼
-  ~/clawd/memory/*.md   ← One file per session
-        │
-        ▼
-  ingest.py             ← Chunks text, calls LLM for extraction
-        │
-        ▼
-  LLM (via OpenClaw)    ← Extracts entities, facts, relationships, emotions
-        │
-        ▼
-  Kùzu Graph DB         ← Stores everything with timestamps + confidence
-        │
-        ▼
-  HTTP API / CLI         ← Query the graph
+Start the server:
+```bash
+python http_server.py
+# Runs on port 3456 (set ENGRAM_PORT to change)
 ```
 
-### What gets extracted
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Node/relationship counts |
+| `/stats` | GET | Counts by type |
+| `/briefing` | GET | Full agent briefing |
+| `/search` | POST | Search entities, facts, episodes |
+| `/entity` | POST | Get entity with all relationships |
+| `/recent` | POST | Recent episodes within time window |
 
-For each chunk of conversation, the LLM produces:
+---
 
-- **Entities**: People, tools, projects, concepts with types and descriptions
-- **Facts**: Knowledge statements with confidence scores and timestamps
-- **Relationships**: How entities connect — `uses`, `created`, `part_of`, `relates_to`, `caused`, etc.
-- **Emotions**: Sentiment with valence/arousal scores and context
-
-### Graph structure
+## Graph Structure
 
 **Nodes:**
+
 | Type | Description |
 |------|------------|
 | Entity | People, tools, projects, concepts |
-| Fact | Extracted knowledge with confidence scores |
-| Episode | Session summaries |
-| Emotion | Emotional states captured during sessions |
-| SessionState | Session metadata |
+| Fact | Knowledge statements with confidence, importance, memory tier |
+| Episode | Session summaries with timestamps |
+
+**Key Fact fields:**
+
+| Field | Description |
+|-------|-------------|
+| `agent_id` | Agent scope (isolation) |
+| `memory_tier` | `candidate` (new) or `canonical` (promoted by cron) |
+| `source_type` | `live_turn`, `live_llm`, `memory`, `live_context` |
+| `importance` | 0.0–1.0 ranking score |
+| `quality_score` | Data quality indicator |
+| `contamination_score` | Noise/pollution indicator |
+| `retrievable` | Whether fact should appear in queries |
 
 **Relationships:**
+
 | Type | Meaning |
 |------|---------|
-| ABOUT | Fact → Entity (this fact is about this entity) |
-| MENTIONED_IN | Entity → Episode (appeared in this session) |
-| DERIVED_FROM | Fact → Episode (extracted from this session) |
-| RELATES_TO | Entity → Entity (general connection) |
-| PART_OF | Entity → Entity (hierarchy) |
-| CAUSED | Entity/Event → Entity/Event (causation) |
-| ENTITY_EVOKES | Entity → Emotion |
-| EPISODE_EVOKES | Episode → Emotion |
+| ABOUT | Fact → Entity |
+| MENTIONED_IN | Entity → Episode |
+| DERIVED_FROM | Fact → Episode |
+| RELATES_TO | Entity → Entity |
 
 ---
 
-## Using with your agent
-
-### Load the briefing at session start
-
-Add `BRIEFING.md` to your agent's workspace files in OpenClaw. The hourly cron keeps it fresh. Your agent wakes up with full context of recent work, key entities, and emotional state.
-
-### Search from your agent
-
-Your agent can call Engram directly via CLI:
-
-```bash
-cd ~/clawd && source .venv-memory/bin/activate && python engram/engram.py search "query"
-```
-
-Or via the HTTP API:
-
-```bash
-curl -s -X POST http://localhost:3456/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "what did we work on yesterday"}'
-```
-
-### Add to AGENTS.md
-
-Add this to your agent's rules so it knows to check memory:
-
-```markdown
-## Memory
-- **Engram** (primary): `cd ~/clawd && source .venv-memory/bin/activate && python engram/engram.py search "query"`
-- Search before answering questions about prior work, preferences, or decisions.
-```
-
----
-
-## File reference
+## File Reference
 
 ```
 engram/
-├── SKILL.md              ← This file
-├── config.json           ← User configuration
-├── engram.py             ← CLI entry point
-├── ingest.py             ← LLM extraction pipeline
-├── export_sessions.py    ← OpenClaw JSONL → markdown converter
-├── http_server.py        ← REST API server
-├── query.py              ← Graph query functions
-├── schema.py             ← Kùzu schema definitions + migrations
-├── briefing.py           ← Briefing generator
-├── consolidate.py        ← Memory consolidation (dream mode)
-├── run_ingest.py         ← Batch ingest runner
-├── session.py            ← Session state management
-├── mcp_server.py         ← MCP server (for tool-calling agents)
-├── update-cron.sh        ← Apply cron schedule from config
-├── requirements.txt      ← Python dependencies
-└── .engram-db/           ← Kùzu graph database (created on first run)
+├── SKILL.md                  ← This file
+├── config.json.example       ← Configuration template
+├── engram.py                 ← CLI entry point
+├── ingest.py                 ← LLM extraction pipeline
+├── context_query.py          ← Fast query interface (used by plugin)
+├── query.py                  ← Graph query functions
+├── schema.py                 ← Schema definitions
+├── schema_neo4j.py           ← Neo4j schema + driver
+├── backend.py                ← Database backend abstraction
+├── export_sessions.py        ← OpenClaw JSONL → markdown converter
+├── http_server.py            ← REST API server
+├── briefing.py               ← Briefing generator
+├── consolidate.py            ← Memory consolidation (dream mode)
+├── dedup_entities.py         ← Entity deduplication
+├── reset_neo4j.py            ← Graph cleanup tools
+├── inject_weekly_patterns.py ← Weekly pattern injection
+├── local-entity-extractor.py ← Local entity extraction
+├── run_ingest.py             ← Batch ingest runner
+├── session.py                ← Session state management
+├── mcp_server.py             ← MCP server (for tool-calling agents)
+├── update-cron.sh            ← Apply cron schedule from config
+├── cleanup-sessions.sh       ← Session cleanup utility
+├── requirements.txt          ← Python dependencies
+├── Dockerfile                ← Neo4j Docker config
+├── docker-compose.yml        ← Docker Compose for Neo4j
+├── REBUILD.md                ← Graph rebuild/cleanup guide
+├── extensions/
+│   └── engram-context-engine/
+│       ├── index.js          ← OpenClaw plugin (main logic)
+│       ├── manifest.json     ← Plugin manifest
+│       ├── openclaw.plugin.json ← Plugin metadata
+│       └── package.json      ← Node.js package info
+└── dashboard/                ← Web dashboard (optional)
+    ├── server.py             ← FastAPI dashboard server
+    └── static/               ← Frontend assets
 ```
 
 ---
 
-## Environment variables (optional overrides)
+## Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `ENGRAM_MODEL` | Override model from config | config.json `model` |
-| `ENGRAM_LLM_MODE` | Override LLM routing | config.json `llm_mode` |
-| `ENGRAM_DB_PATH` | Custom database path | `engram/.engram-db` |
+| `XAI_API_KEY` | xAI API key for extraction | config.json |
+| `NEO4J_URI` | Neo4j connection URI | config.json / `bolt://localhost:7687` |
+| `NEO4J_USER` | Neo4j username | config.json / `neo4j` |
+| `NEO4J_PASSWORD` | Neo4j password | config.json |
 | `ENGRAM_PORT` | HTTP server port | `3456` |
-| `XAI_API_KEY` | Required only if `llm_mode=xai` | — |
+| `ENGRAM_AGENT_ID` | Override agent ID for queries | — |
 
 ---
 
 ## Troubleshooting
 
-**"LLM extraction failed: XAI_API_KEY not set"**
-→ You're using `llm_mode: "xai"` without the env var. Switch to `llm_mode: "openclaw"` in config.json (recommended).
+**"XAI_API_KEY not configured"**
+→ Set `xai_api_key` in config.json or export `XAI_API_KEY` env var.
+
+**Neo4j connection refused**
+→ Make sure Neo4j is running: `docker-compose up -d` or check your standalone install.
 
 **"Could not set lock on file"**
-→ Another process has the database open for writing. Wait for ingestion to finish, or restart the HTTP server after ingestion completes.
+→ Another process has the database open. Wait for ingestion to finish.
 
-**"openclaw.json not found"**
-→ Engram can't find your OpenClaw config. Make sure OpenClaw is installed and `~/.openclaw/openclaw.json` exists. Or set `openclaw_port` and `openclaw_token` manually in config.json.
-
-**Ingestion is slow**
-→ It's serial by default. Each chunk makes one LLM call. For 70+ sessions, expect 30-60 minutes on first run. Subsequent runs only process new files. Async parallel processing is planned.
+**Plugin not injecting memories**
+→ Check OpenClaw logs for `[engram-context-engine]` messages. Verify `plugins.slots.contextEngine` is set to `"engram-context-engine"` in your OpenClaw config.
 
 **Empty search results**
-→ Run `python engram/engram.py ingest` to make sure files have been processed. Check `/health` endpoint for node counts.
+→ Run `python engram.py ingest` to process files. Check Neo4j browser at `http://localhost:7474`.
+
+**Ingestion is slow**
+→ First run processes all files. Subsequent runs only process new ones. Increase `max_concurrent_chunks` for faster parallel processing.
+
+**Agent memories leaking between agents**
+→ Verify `agent_id` is set correctly. The plugin auto-detects from session file paths. Check with: `python context_query.py query "test" --agent <agent_id> --json`
