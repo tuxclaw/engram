@@ -52,12 +52,17 @@ User message arrives
 git clone https://github.com/Atomlaunch/engram.git
 cd engram
 
-# Create a Python virtual environment
+# One-shot setup (recommended)
+bash scripts/setup.sh
+```
+
+Manual setup is still available if you want to do each step yourself:
+
+```bash
 python3 -m venv .venv-memory
 source .venv-memory/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
+pip install neo4j
 ```
 
 ### 3. Start Neo4j
@@ -74,6 +79,10 @@ docker-compose up -d
 Or install Neo4j standalone and start it manually.
 
 ### 4. Configure
+
+If you used `bash scripts/setup.sh`, `config.json` is created for you automatically the first time.
+
+Otherwise:
 
 ```bash
 cp config.json.example config.json
@@ -377,7 +386,8 @@ engram/
 ├── session.py                ← Session state management
 ├── mcp_server.py             ← MCP server (for tool-calling agents)
 ├── scripts/
-│   └── seed_scoped_pinned.py ← Helper to seed global/channel/session pinned facts
+│   ├── seed_scoped_pinned.py ← Helper to seed global/channel/session pinned facts
+│   └── setup.sh             ← One-shot local setup/bootstrap script
 ├── update-cron.sh            ← Apply cron schedule from config
 ├── cleanup-sessions.sh       ← Session cleanup utility
 ├── requirements.txt          ← Python dependencies
