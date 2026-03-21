@@ -4,6 +4,25 @@
  */
 
 const API_BASE = window.location.origin;
+const THEME_STORAGE_KEY = "engram-theme";
+
+const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+if (savedTheme !== null) {
+    document.documentElement.setAttribute("data-theme", savedTheme);
+}
+
+function initThemeSwitcher() {
+    const select = document.getElementById("theme-select");
+    if (!select) return;
+
+    select.value = localStorage.getItem(THEME_STORAGE_KEY) || "";
+
+    select.addEventListener("change", () => {
+        const value = select.value;
+        localStorage.setItem(THEME_STORAGE_KEY, value);
+        document.documentElement.setAttribute("data-theme", value);
+    });
+}
 
 // Sidebar/UI colors (separate from graph colors which are monochrome)
 const TYPE_COLORS = {
@@ -64,6 +83,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Wire up agent filter
     initAgentFilter();
 
+    // Wire up theme switcher
+    initThemeSwitcher();
+
     // Wire up explore button
     document.getElementById("btn-explore-graph").addEventListener("click", () => {
         switchTab("graph");
@@ -92,7 +114,7 @@ async function initAgentFilter() {
         const data = await resp.json();
         
         // Add agent options
-        const agentNames = { main: "💠 Jarvis", loopfans: "🔁 LoopAgent", sillyfarms: "🌿 SillyFarms", shared: "🌐 Shared" };
+        const agentNames = { main: "⚡ Andy", shared: "🌐 Shared" };
         for (const agent of data.agents || []) {
             const opt = document.createElement("option");
             opt.value = agent.id;

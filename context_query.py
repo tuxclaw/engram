@@ -692,12 +692,11 @@ def extract_and_store_llm(text: str, agent_id: str, session_id: str, role: str =
     if _is_noise(clean_text):
         return {"ok": True, "stored": 0, "skipped": True, "reason": "noise_filtered"}
 
-    api_key = _lookup_xai_api_key()
-    if not api_key:
-        return {"ok": False, "error": "XAI_API_KEY not configured"}
+    ollama_url = os.environ.get("ENGRAM_OLLAMA_URL", "http://localhost:11434")
+    ollama_model = os.environ.get("ENGRAM_OLLAMA_MODEL", "qwen3.5:35b-a3b")
 
     payload = {
-        "model": "grok-3-mini-fast",
+        "model": ollama_model,
         "messages": [
             {
                 "role": "system",
@@ -705,38 +704,38 @@ def extract_and_store_llm(text: str, agent_id: str, session_id: str, role: str =
             },
             {"role": "user", "content": clean_text},
         ],
-        "max_tokens": 150,
-        "temperature": 0,
+        "stream": False,
+        "think": False,
+        "options": {"num_predict": 300, "temperature": 0},
     }
 
     req = urllib.request.Request(
-        "https://api.x.ai/v1/chat/completions",
+        f"{ollama_url}/api/chat",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
             "User-Agent": "Engram/1.0",
         },
         method="POST",
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         try:
             detail = e.read().decode("utf-8", errors="ignore")
         except Exception:
             detail = str(e)
-        return {"ok": False, "error": f"xAI API HTTP {e.code}: {detail[:300]}"}
+        return {"ok": False, "error": f"Ollama HTTP {e.code}: {detail[:300]}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
     try:
-        content = body["choices"][0]["message"]["content"]
+        content = body["message"]["content"]
         facts = _parse_llm_fact_array(content)
     except Exception as e:
-        return {"ok": False, "error": f"invalid xAI response: {e}"}
+        return {"ok": False, "error": f"invalid Ollama response: {e}"}
 
     if not facts:
         return {"ok": True, "stored": 0, "skipped": True, "reason": "no_candidates", "facts": []}
