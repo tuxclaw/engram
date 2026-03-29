@@ -154,7 +154,7 @@ def main():
                 total_stored += stored
                 if stored == 0:
                     total_skipped += 1
-                # Small delay between extractions to not overwhelm Ollama
+                # Small delay between extractions to avoid rate limiting
                 if stored > 0:
                     time.sleep(0.5)
             except Exception as e:

@@ -482,46 +482,6 @@ def _call_xai(prompt: str) -> Optional[dict]:
         return parsed
 
 
-def _call_ollama(prompt: str) -> Optional[dict]:
-    """Call local Ollama (qwen3.5:35b-a3b) for extraction."""
-    import urllib.request
-    
-    payload = json.dumps({
-        "model": "qwen3.5:35b-a3b",
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 4096
-        }
-    })
-    
-    req = urllib.request.Request(
-        "http://localhost:11434/api/generate",
-        data=payload.encode(),
-        headers={"Content-Type": "application/json"}
-    )
-    
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        result = json.loads(resp.read().decode())
-        text = result.get("response", "").strip()
-        
-        # Parse JSON from response
-        if text.startswith("```"):
-            text = re.sub(r'^```\w*\n', '', text)
-            text = re.sub(r'\n```$', '', text)
-        
-        parsed = json.loads(text)
-        
-        # Validate structure
-        if not isinstance(parsed, dict):
-            raise ValueError("Response is not a dict")
-        if "entities" not in parsed:
-            raise ValueError("Missing 'entities' key")
-        
-        return parsed
-
 
 def classify_source(filepath: Path, text: str = "") -> dict:
     """Classify source quality and contamination risk for first-pass memory hygiene.
