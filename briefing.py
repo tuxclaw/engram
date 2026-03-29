@@ -26,7 +26,9 @@ import kuzu
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engram.backend import get_db, get_conn, get_stats
 
-BRIEFING_PATH = os.environ.get("ENGRAM_BRIEFING_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "BRIEFING.md"))
+ENGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
+BRIEFING_PATH = os.environ.get("ENGRAM_BRIEFING_PATH", os.path.join(ENGRAM_DIR, "..", "BRIEFING.md"))
+LAST_BRIEFING_TS_PATH = os.path.join(ENGRAM_DIR, ".last_briefing_ts")
 
 
 def get_recent_episodes(conn: kuzu.Connection, days: int = 3, limit: int = 15) -> list[dict]:
@@ -248,6 +250,143 @@ def generate_briefing(conn: kuzu.Connection) -> str:
             lines.append(f"- {label} ({valence}) — {ctx}")
         lines.append("")
     
+    return "\n".join(lines)
+
+
+def _load_last_briefing_ts() -> Optional[datetime]:
+    """Load last briefing timestamp from disk."""
+    if not os.path.exists(LAST_BRIEFING_TS_PATH):
+        return None
+    try:
+        raw = ""
+        with open(LAST_BRIEFING_TS_PATH, "r") as f:
+            raw = f.read().strip()
+        if not raw:
+            return None
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _save_last_briefing_ts(ts: datetime) -> None:
+    """Persist last briefing timestamp to disk."""
+    try:
+        with open(LAST_BRIEFING_TS_PATH, "w") as f:
+            f.write(ts.isoformat())
+    except Exception as e:
+        print(f"  Warning: failed to save last briefing timestamp: {e}", file=sys.stderr)
+
+
+def generate_delta_briefing(conn: kuzu.Connection) -> str:
+    """Generate a delta briefing since the last briefing."""
+    last_ts = _load_last_briefing_ts()
+    now = datetime.now()
+
+    if not last_ts:
+        briefing = generate_briefing(conn)
+        _save_last_briefing_ts(now)
+        return briefing
+
+    results = {"facts": [], "episodes": [], "entities": []}
+
+    try:
+        result = conn.execute(
+            "MATCH (f:Fact) "
+            "WHERE f.created_at > timestamp($p_last) "
+            "RETURN f.content, f.category, f.created_at "
+            "ORDER BY f.created_at DESC LIMIT 25",
+            {"p_last": last_ts.isoformat()}
+        )
+        while result.has_next():
+            row = result.get_next()
+            results["facts"].append({
+                "content": row[0], "category": row[1], "created_at": str(row[2])
+            })
+    except Exception as e:
+        print(f"  Warning: delta facts query failed: {e}", file=sys.stderr)
+
+    try:
+        result = conn.execute(
+            "MATCH (ep:Episode) "
+            "WHERE ep.occurred_at > timestamp($p_last) "
+            "RETURN ep.summary, ep.source_file, ep.occurred_at "
+            "ORDER BY ep.occurred_at DESC LIMIT 25",
+            {"p_last": last_ts.isoformat()}
+        )
+        while result.has_next():
+            row = result.get_next()
+            results["episodes"].append({
+                "summary": row[0], "source_file": row[1], "occurred_at": str(row[2])
+            })
+    except Exception as e:
+        print(f"  Warning: delta episodes query failed: {e}", file=sys.stderr)
+
+    try:
+        result = conn.execute(
+            "MATCH (e:Entity) "
+            "WHERE e.created_at > timestamp($p_last) "
+            "RETURN e.name, e.entity_type, e.description, e.created_at "
+            "ORDER BY e.created_at DESC LIMIT 25",
+            {"p_last": last_ts.isoformat()}
+        )
+        while result.has_next():
+            row = result.get_next()
+            results["entities"].append({
+                "name": row[0], "type": row[1], "description": row[2], "created_at": str(row[3])
+            })
+    except Exception as e:
+        print(f"  Warning: delta entities query failed: {e}", file=sys.stderr)
+
+    lines = []
+    lines.append("# 🧠 Delta Briefing — What's New")
+    lines.append(f"*Since: {last_ts.strftime('%Y-%m-%d %H:%M')}*")
+    lines.append(f"*Generated: {now.strftime('%Y-%m-%d %H:%M PST')}*")
+    lines.append("")
+
+    lines.append("## New Facts")
+    if results["facts"]:
+        seen = set()
+        for fact in results["facts"]:
+            content = fact.get("content", "")
+            if not content or content in seen:
+                continue
+            seen.add(content)
+            cat = fact.get("category", "")
+            if "|" in cat:
+                cat = cat.split("|")[0]
+            lines.append(f"- [{cat}] {content}")
+    else:
+        lines.append("- None")
+    lines.append("")
+
+    lines.append("## New Episodes")
+    if results["episodes"]:
+        seen = set()
+        for ep in results["episodes"]:
+            summary = ep.get("summary", "")
+            if not summary or summary in seen:
+                continue
+            seen.add(summary)
+            date = ep.get("occurred_at", "")[:10]
+            if len(summary) > 150:
+                summary = summary[:147] + "..."
+            lines.append(f"- **[{date}]** {summary}")
+    else:
+        lines.append("- None")
+    lines.append("")
+
+    lines.append("## New Entities")
+    if results["entities"]:
+        for ent in results["entities"]:
+            desc = ent.get("description", "")
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+            lines.append(f"- **{ent['name']}** ({ent['type']}) — {desc}")
+    else:
+        lines.append("- None")
+    lines.append("")
+
+    _save_last_briefing_ts(now)
     return "\n".join(lines)
 
 

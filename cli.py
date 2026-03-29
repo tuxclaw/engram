@@ -11,6 +11,13 @@ Usage:
   engram facts --recent [--days 7]            # Recent facts
   engram stats                                # Graph statistics
   engram briefing [--save]                    # Generate session briefing
+  engram briefing --delta                     # Delta briefing since last run
+  engram dispatch Buzz --project CalCity      # Pre-dispatch context
+  engram todos [--all] [--agent main]         # List todos
+  engram todo-add \"Do the thing\"            # Add a todo
+  engram todo-done <id>                       # Resolve a todo
+  engram contradictions [--days 7]            # Recent superseded facts
+  engram recent [--hours 48]                  # Recent activity across types
   engram health                               # Graph health check
 """
 
@@ -36,7 +43,7 @@ def cmd_search(args):
     """Unified search across all memory types."""
     from engram.query import unified_search, print_results
     conn = get_conn(get_db(read_only=False))
-    results = unified_search(conn, args.query, limit=args.limit, agent_id=args.agent)
+    results = unified_search(conn, args.query, limit=args.limit, agent_id=args.agent, since=args.since, until=args.until)
     if args.json:
         print(json.dumps(results, indent=2, default=str))
     else:
@@ -280,15 +287,24 @@ def cmd_agent_history(args):
 def cmd_facts(args):
     """List recent or filtered facts."""
     conn = get_conn(get_db(read_only=True))
-    days = args.days
 
     try:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         query_str = (
             "MATCH (f:Fact) "
-            "WHERE f.created_at >= timestamp($p_cutoff) "
+            "WHERE 1=1 "
         )
-        params = {"p_cutoff": cutoff, "p_limit": args.limit}
+        params = {"p_limit": args.limit}
+
+        if args.since:
+            query_str += "AND f.created_at >= timestamp($p_since) "
+            params["p_since"] = args.since
+        if args.until:
+            query_str += "AND f.created_at <= timestamp($p_until) "
+            params["p_until"] = args.until
+        if not args.since and not args.until:
+            cutoff = (datetime.now() - timedelta(days=args.days)).isoformat()
+            query_str += "AND f.created_at >= timestamp($p_cutoff) "
+            params["p_cutoff"] = cutoff
 
         if args.category:
             query_str += "AND f.category = $p_cat "
@@ -318,10 +334,16 @@ def cmd_facts(args):
         return
 
     if not facts:
-        print(f"No facts found in the last {days} days.")
+        if args.since or args.until:
+            print("No facts found for the requested time range.")
+        else:
+            print(f"No facts found in the last {args.days} days.")
         return
 
-    print(f"\n📋 Recent Facts (last {days} days, {len(facts)} results)")
+    if args.since or args.until:
+        print(f"\n📋 Facts ({len(facts)} results)")
+    else:
+        print(f"\n📋 Recent Facts (last {args.days} days, {len(facts)} results)")
     print("=" * 60)
     for f in facts:
         date = str(f.get("date", ""))[:10]
@@ -389,9 +411,9 @@ def cmd_stats(args):
 
 def cmd_briefing(args):
     """Generate a session briefing."""
-    from engram.briefing import generate_briefing, save_briefing
+    from engram.briefing import generate_briefing, generate_delta_briefing, save_briefing
     conn = get_conn(get_db(read_only=True))
-    briefing = generate_briefing(conn)
+    briefing = generate_delta_briefing(conn) if args.delta else generate_briefing(conn)
 
     if args.json:
         print(json.dumps({"briefing": briefing, "generated_at": datetime.now().isoformat()}, default=str))
@@ -400,6 +422,219 @@ def cmd_briefing(args):
 
     if args.save:
         save_briefing(briefing)
+
+
+def cmd_dispatch(args):
+    """Generate pre-dispatch context for an agent."""
+    from engram.dispatch_context import get_dispatch_context
+    conn = get_conn(get_db(read_only=True))
+    context = get_dispatch_context(conn, args.agent, args.project)
+    if args.json:
+        print(json.dumps({"context": context, "generated_at": datetime.now().isoformat()}, default=str))
+    else:
+        print(context)
+
+
+def cmd_todos(args):
+    """List open or all todos."""
+    conn = get_conn(get_db(read_only=True))
+    from engram.todos import get_open_todos
+
+    todos = []
+    if args.all:
+        try:
+            params = {"p_limit": 100}
+            agent_filter = ""
+            if args.agent:
+                agent_filter = " AND f.agent_id = $p_agent"
+                params["p_agent"] = args.agent
+            result = conn.execute(
+                "MATCH (f:Fact) "
+                "WHERE lower(f.category) = 'todo' "
+                + agent_filter +
+                " RETURN f.id, f.content, f.created_at, f.status, f.resolved_at, f.agent_id "
+                "ORDER BY f.created_at DESC LIMIT $p_limit",
+                params
+            )
+            while result.has_next():
+                row = result.get_next()
+                todos.append({
+                    "id": row[0], "content": row[1], "created_at": str(row[2]),
+                    "status": row[3], "resolved_at": str(row[4]) if row[4] else None,
+                    "agent_id": row[5]
+                })
+        except Exception as e:
+            print(f"Todos query error: {e}", file=sys.stderr)
+            todos = []
+    else:
+        todos = get_open_todos(conn, agent_id=args.agent)
+
+    if args.json:
+        print(json.dumps(todos, indent=2, default=str))
+        return
+
+    if not todos:
+        print("No todos found.")
+        return
+
+    title = "📌 Todos" if args.all else "📌 Open Todos"
+    print(title)
+    print("=" * 60)
+    for todo in todos:
+        status = todo.get("status") or "open"
+        date = str(todo.get("created_at", ""))[:10]
+        agent = todo.get("agent_id", "main")
+        print(f"  [{date}] ({agent}) [{status}] {todo.get('content', '')} [{todo.get('id', '')}]")
+
+
+def cmd_todo_add(args):
+    """Add a todo."""
+    conn = get_conn(get_db(read_only=False))
+    from engram.todos import add_todo
+    result = add_todo(conn, args.content, agent_id=args.agent)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        if result.get("ok"):
+            print(f"Added todo: {result.get('id')}")
+        else:
+            print(f"Todo add failed: {result.get('error')}")
+
+
+def cmd_todo_done(args):
+    """Resolve a todo."""
+    conn = get_conn(get_db(read_only=False))
+    from engram.todos import resolve_todo
+    result = resolve_todo(conn, args.id)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        if result.get("ok"):
+            print(f"Resolved todo: {result.get('id')}")
+        else:
+            print(f"Todo resolve failed: {result.get('error')}")
+
+
+def cmd_contradictions(args):
+    """List recent superseded facts."""
+    conn = get_conn(get_db(read_only=True))
+    cutoff = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    try:
+        result = conn.execute(
+            "MATCH (new:Fact)-[r:SUPERSEDES]->(old:Fact) "
+            "WHERE r.created_at >= datetime($p_cutoff) "
+            "RETURN new.id, new.content, old.id, old.content, r.created_at "
+            "ORDER BY r.created_at DESC LIMIT $p_limit",
+            {"p_cutoff": cutoff, "p_limit": 50}
+        )
+        while result.has_next():
+            row = result.get_next()
+            rows.append({
+                "new_id": row[0], "new_content": row[1],
+                "old_id": row[2], "old_content": row[3],
+                "created_at": str(row[4])
+            })
+    except Exception as e:
+        print(f"Contradictions query error: {e}", file=sys.stderr)
+        rows = []
+
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        print(f"No superseded facts found in the last {args.days} days.")
+        return
+
+    print(f"♻️ Superseded Facts (last {args.days} days)")
+    print("=" * 60)
+    for row in rows:
+        date = str(row.get("created_at", ""))[:16]
+        old_text = (row.get("old_content") or "")[:120]
+        new_text = (row.get("new_content") or "")[:120]
+        print(f"  [{date}] {row.get('old_id')} → {row.get('new_id')}")
+        print(f"    OLD: {old_text}")
+        print(f"    NEW: {new_text}")
+
+
+def cmd_recent(args):
+    """Show recent activity across facts, episodes, and entities."""
+    conn = get_conn(get_db(read_only=True))
+    cutoff = (datetime.now() - timedelta(hours=args.hours)).strftime("%Y-%m-%d %H:%M:%S")
+    results = {"facts": [], "episodes": [], "entities": []}
+
+    try:
+        result = conn.execute(
+            "MATCH (f:Fact) "
+            "WHERE f.created_at >= timestamp($p_cutoff) "
+            "RETURN f.content, f.category, f.created_at "
+            "ORDER BY f.created_at DESC LIMIT $p_limit",
+            {"p_cutoff": cutoff, "p_limit": 30}
+        )
+        while result.has_next():
+            row = result.get_next()
+            results["facts"].append({
+                "content": row[0], "category": row[1], "created_at": str(row[2])
+            })
+    except Exception as e:
+        print(f"Recent facts query error: {e}", file=sys.stderr)
+
+    try:
+        result = conn.execute(
+            "MATCH (ep:Episode) "
+            "WHERE ep.occurred_at >= timestamp($p_cutoff) "
+            "RETURN ep.summary, ep.source_file, ep.occurred_at "
+            "ORDER BY ep.occurred_at DESC LIMIT $p_limit",
+            {"p_cutoff": cutoff, "p_limit": 30}
+        )
+        while result.has_next():
+            row = result.get_next()
+            results["episodes"].append({
+                "summary": row[0], "source_file": row[1], "occurred_at": str(row[2])
+            })
+    except Exception as e:
+        print(f"Recent episodes query error: {e}", file=sys.stderr)
+
+    try:
+        result = conn.execute(
+            "MATCH (e:Entity) "
+            "WHERE e.created_at >= timestamp($p_cutoff) "
+            "RETURN e.name, e.entity_type, e.description, e.created_at "
+            "ORDER BY e.created_at DESC LIMIT $p_limit",
+            {"p_cutoff": cutoff, "p_limit": 30}
+        )
+        while result.has_next():
+            row = result.get_next()
+            results["entities"].append({
+                "name": row[0], "type": row[1], "description": row[2], "created_at": str(row[3])
+            })
+    except Exception as e:
+        print(f"Recent entities query error: {e}", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
+        return
+
+    print(f"⏱️ Recent Activity (last {args.hours} hours)")
+    print("=" * 60)
+    if results["facts"]:
+        print("\n📋 Facts")
+        for f in results["facts"]:
+            date = str(f.get("created_at", ""))[:16]
+            cat = f.get("category", "")
+            print(f"  [{date}] [{cat}] {f.get('content', '')[:140]}")
+    if results["episodes"]:
+        print("\n📖 Episodes")
+        for ep in results["episodes"]:
+            date = str(ep.get("occurred_at", ""))[:16]
+            print(f"  [{date}] {ep.get('summary', '')[:140]}")
+    if results["entities"]:
+        print("\n🔵 Entities")
+        for ent in results["entities"]:
+            date = str(ent.get("created_at", ""))[:16]
+            desc = ent.get("description", "") or ""
+            print(f"  [{date}] {ent.get('name', '')} ({ent.get('type', '')}) {desc[:120]}")
 
 
 def cmd_health(args):
@@ -544,6 +779,8 @@ Examples:
     p.add_argument("query", help="Search terms")
     p.add_argument("--limit", "-n", type=int, default=10)
     p.add_argument("--agent", type=str, default=None)
+    p.add_argument("--since", type=str, default=None, help="ISO date filter (>=)")
+    p.add_argument("--until", type=str, default=None, help="ISO date filter (<=)")
     p.add_argument("--json", "-j", action="store_true")
     p.add_argument("--verbose", "-v", action="store_true")
 
@@ -574,6 +811,8 @@ Examples:
     p.add_argument("--limit", "-n", type=int, default=20)
     p.add_argument("--category", "-c", type=str, default=None)
     p.add_argument("--source", "-s", type=str, default=None, help="Filter by source_type")
+    p.add_argument("--since", type=str, default=None, help="ISO date filter (>=)")
+    p.add_argument("--until", type=str, default=None, help="ISO date filter (<=)")
     p.add_argument("--json", "-j", action="store_true")
 
     # stats
@@ -583,6 +822,40 @@ Examples:
     # briefing
     p = subparsers.add_parser("briefing", aliases=["b"], help="Generate session briefing")
     p.add_argument("--save", action="store_true", help="Save to BRIEFING.md")
+    p.add_argument("--delta", action="store_true", help="Only show new items since last briefing")
+    p.add_argument("--json", "-j", action="store_true")
+
+    # dispatch
+    p = subparsers.add_parser("dispatch", help="Generate pre-dispatch context")
+    p.add_argument("agent", help="Agent name")
+    p.add_argument("--project", "-p", type=str, default=None, help="Optional project name")
+    p.add_argument("--json", "-j", action="store_true")
+
+    # todos
+    p = subparsers.add_parser("todos", help="List open todos")
+    p.add_argument("--all", action="store_true", help="Include resolved todos")
+    p.add_argument("--agent", type=str, default=None, help="Filter by agent")
+    p.add_argument("--json", "-j", action="store_true")
+
+    # todo-add
+    p = subparsers.add_parser("todo-add", help="Add a todo")
+    p.add_argument("content", help="Todo content")
+    p.add_argument("--agent", type=str, default="main")
+    p.add_argument("--json", "-j", action="store_true")
+
+    # todo-done
+    p = subparsers.add_parser("todo-done", help="Resolve a todo")
+    p.add_argument("id", help="Todo fact id")
+    p.add_argument("--json", "-j", action="store_true")
+
+    # contradictions
+    p = subparsers.add_parser("contradictions", help="Recent superseded facts")
+    p.add_argument("--days", "-d", type=int, default=7)
+    p.add_argument("--json", "-j", action="store_true")
+
+    # recent
+    p = subparsers.add_parser("recent", help="Recent activity across types")
+    p.add_argument("--hours", "-H", type=int, default=48)
     p.add_argument("--json", "-j", action="store_true")
 
     # health
@@ -604,6 +877,12 @@ Examples:
             "facts": cmd_facts, "f": cmd_facts,
             "stats": cmd_stats,
             "briefing": cmd_briefing, "b": cmd_briefing,
+            "dispatch": cmd_dispatch,
+            "todos": cmd_todos,
+            "todo-add": cmd_todo_add,
+            "todo-done": cmd_todo_done,
+            "contradictions": cmd_contradictions,
+            "recent": cmd_recent,
             "health": cmd_health, "h": cmd_health,
         }
         cmd_map[args.command](args)

@@ -18,6 +18,7 @@ import re
 import sys
 import hashlib
 import subprocess
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,7 +89,7 @@ DATE: {date}
 - Decisions that change future behavior
 - Project milestones and completions
 - Agent outcomes that had real impact
-- Todos, reminders, commitments
+- Todos, reminders, commitments (use category \"todo\")
 - Stable relationships (people ↔ projects ↔ repos ↔ tools)
 - Preferences and operating rules
 - Errors ONLY if they taught a lesson or are recurring
@@ -131,7 +132,7 @@ Extract the following as JSON (and nothing else):
   "facts": [
     {{
       "content": "A clear, standalone factual statement",
-      "category": "preference|decision|lesson|milestone|action|technical",
+      "category": "preference|decision|lesson|milestone|action|technical|todo",
       "importance": "high|medium",
       "confidence": 0.9,
       "about": ["entity name(s) this fact concerns"]
@@ -188,6 +189,10 @@ NEVER_STORE_FACT_PATTERNS = [
     re.compile(r'cron\s+(ran|executed|completed)\s+(successfully|ok)', re.IGNORECASE),
     re.compile(r'^(deployed|built|passed|ok|done|success|complete)\.?$', re.IGNORECASE),
 ]
+
+TODO_COMPLETION_PAT = re.compile(r"\b(done|completed|resolved|finished|closed)\b", re.IGNORECASE)
+TODO_COMPLETION_PREFIX = re.compile(r"\b(?:done|completed|resolved|finished|closed)[:\s]+(.+)$", re.IGNORECASE)
+TODO_COMPLETION_SUFFIX = re.compile(r"(.+?)\s+(?:is|was)\s+(?:done|completed|resolved|finished|closed)\b", re.IGNORECASE)
 
 IMPORTANCE_MAP = {
     "high": 0.85,
@@ -271,6 +276,88 @@ def fact_importance_score(fact: dict, source_meta: Optional[dict] = None) -> flo
         base = min(base + 0.10, 1.0)
     
     return round(base, 2)
+
+
+def _completion_snippet(content: str) -> Optional[str]:
+    if not content or not TODO_COMPLETION_PAT.search(content):
+        return None
+    match = TODO_COMPLETION_PREFIX.search(content)
+    if match:
+        return match.group(1).strip()
+    match = TODO_COMPLETION_SUFFIX.search(content)
+    if match:
+        return match.group(1).strip()
+    return content.strip()
+
+
+def _resolve_related_todos(conn: kuzu.Connection, content: str, about: list[str], agent_id: str):
+    """Resolve open todos that match a completion fact."""
+    snippet = _completion_snippet(content)
+    if not snippet:
+        return
+
+    token = max((tok for tok in re.findall(r"[a-z0-9]+", snippet.lower()) if len(tok) >= 4), key=len, default="")
+    if not token:
+        return
+
+    params = {"p_token": token, "p_agent": agent_id}
+    todo_rows = []
+
+    try:
+        if about:
+            name_list = [str(n).strip().lower() for n in about if str(n).strip()]
+            if name_list:
+                result = conn.execute(
+                    "MATCH (f:Fact)-[:ABOUT]->(e:Entity) "
+                    "WHERE lower(f.category) = 'todo' "
+                    "AND (f.status IS NULL OR f.status <> 'resolved') "
+                    "AND f.agent_id = $p_agent "
+                    "AND lower(f.content) CONTAINS lower($p_token) "
+                    "AND lower(e.name) IN $p_names "
+                    "RETURN f.id, f.content LIMIT 10",
+                    {**params, "p_names": name_list}
+                )
+            else:
+                result = conn.execute(
+                    "MATCH (f:Fact) "
+                    "WHERE lower(f.category) = 'todo' "
+                    "AND (f.status IS NULL OR f.status <> 'resolved') "
+                    "AND f.agent_id = $p_agent "
+                    "AND lower(f.content) CONTAINS lower($p_token) "
+                    "RETURN f.id, f.content LIMIT 10",
+                    params
+                )
+        else:
+            result = conn.execute(
+                "MATCH (f:Fact) "
+                "WHERE lower(f.category) = 'todo' "
+                "AND (f.status IS NULL OR f.status <> 'resolved') "
+                "AND f.agent_id = $p_agent "
+                "AND lower(f.content) CONTAINS lower($p_token) "
+                "RETURN f.id, f.content LIMIT 10",
+                params
+            )
+        while result.has_next():
+            row = result.get_next()
+            todo_rows.append((row[0], row[1]))
+    except Exception:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for tid, tcontent in todo_rows:
+        ratio = SequenceMatcher(None, snippet.lower(), str(tcontent or "").lower()).ratio()
+        if ratio < 0.62:
+            continue
+        try:
+            conn.execute(
+                "MATCH (f:Fact {id: $p_id}) "
+                "SET f.status = 'resolved', "
+                "f.resolved_at = timestamp($p_now), "
+                "f.updated_at = timestamp($p_now)",
+                {"p_id": tid, "p_now": now}
+            )
+        except Exception:
+            continue
 
 
 def normalize_entity_name(name: str) -> str:
@@ -782,6 +869,8 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
         content = fact.get("content", "").strip()
         if not content:
             continue
+
+        category = str(fact.get("category", "context") or "context").lower()
         
         # Apply extraction policy pre-store test
         if not passes_prestore_test(fact):
@@ -811,7 +900,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                 {
                     "p_id": fid,
                     "p_content": content,
-                    "p_cat": fact.get("category", "context"),
+                    "p_cat": category,
                     "p_conf": fact.get("confidence", 0.8),
                     "p_vat": episode_ts,
                     "p_agent": agent_id,
@@ -825,6 +914,16 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "p_now": now_str
                 }
             )
+
+            if category == "todo":
+                try:
+                    conn.execute(
+                        "MATCH (f:Fact {id: $p_id}) "
+                        "SET f.status = CASE WHEN f.status IS NULL OR f.status = '' THEN 'open' ELSE f.status END",
+                        {"p_id": fid}
+                    )
+                except Exception:
+                    pass
             
             # Link fact to episode
             conn.execute(
@@ -844,12 +943,25 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                         "ON CREATE SET r.aspect = $p_asp, r.created_at = datetime($p_now)",
                         {
                             "p_fid": fid, "p_eid": about_id,
-                            "p_asp": fact.get("category", "context"),
+                            "p_asp": category,
                             "p_now": now_str
                         }
                     )
                 except Exception:
                     pass
+
+            # Auto-resolve related todos if this fact signals completion
+            _resolve_related_todos(conn, content, fact.get("about", []), agent_id)
+
+            # Check for contradictions / supersedes
+            try:
+                from engram.contradictions import check_contradictions, supersede_fact
+                candidates = check_contradictions(conn, content, fact.get("about", []))
+                for c in candidates:
+                    if c.get("confidence", 0) >= 0.8:
+                        supersede_fact(conn, c.get("fact_id"), fid)
+            except Exception:
+                pass
                     
         except Exception as e:
             print(f"    ⚠️  Fact store failed: {e}")

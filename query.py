@@ -90,7 +90,8 @@ def _reinforce_nodes(conn: kuzu.Connection, node_label: str, ids: list[str]):
 
 
 def search_entities(conn: kuzu.Connection, query: str, limit: int = 10,
-                    reinforce: bool = True, agent_id: Optional[str] = None) -> list[dict]:
+                    reinforce: bool = True, agent_id: Optional[str] = None,
+                    since: Optional[str] = None, until: Optional[str] = None) -> list[dict]:
     """Search entities by name (case-insensitive partial match).
     
     Applies importance tier weighting to result ordering.
@@ -104,11 +105,18 @@ def search_entities(conn: kuzu.Connection, query: str, limit: int = 10,
         else:
             agent_filter = ""
             params = {"p_q": query, "p_lim": limit}
+        time_filter = ""
+        if since:
+            time_filter += " AND e.created_at >= timestamp($p_since)"
+            params["p_since"] = since
+        if until:
+            time_filter += " AND e.created_at <= timestamp($p_until)"
+            params["p_until"] = until
         result = conn.execute(
             "MATCH (e:Entity) "
             "WHERE (lower(e.name) CONTAINS lower($p_q) OR lower(e.description) CONTAINS lower($p_q))"
             " AND coalesce(e.retrievable, true) = true"
-            + agent_filter +
+            + agent_filter + time_filter +
             " RETURN e.id, e.name, e.entity_type, e.description, e.importance, e.access_count, e.memory_tier, e.quality_score, e.contamination_score, e.retrievable "
             "ORDER BY coalesce(e.is_canonical, false) DESC, coalesce(e.quality_score, e.importance, 0) DESC, e.importance DESC LIMIT $p_lim",
             params
@@ -142,7 +150,8 @@ def search_entities(conn: kuzu.Connection, query: str, limit: int = 10,
 
 
 def search_facts(conn: kuzu.Connection, query: str, limit: int = 10,
-                 reinforce: bool = True, agent_id: Optional[str] = None) -> list[dict]:
+                 reinforce: bool = True, agent_id: Optional[str] = None,
+                 since: Optional[str] = None, until: Optional[str] = None) -> list[dict]:
     """Search facts by content.
     
     Applies importance tier weighting to result ordering.
@@ -156,11 +165,18 @@ def search_facts(conn: kuzu.Connection, query: str, limit: int = 10,
         else:
             agent_filter = ""
             params = {"p_q": query, "p_lim": limit}
+        time_filter = ""
+        if since:
+            time_filter += " AND f.created_at >= timestamp($p_since)"
+            params["p_since"] = since
+        if until:
+            time_filter += " AND f.created_at <= timestamp($p_until)"
+            params["p_until"] = until
         result = conn.execute(
             "MATCH (f:Fact) "
             "WHERE lower(f.content) CONTAINS lower($p_q)"
             " AND coalesce(f.retrievable, true) = true"
-            + agent_filter +
+            + agent_filter + time_filter +
             " RETURN f.id, f.content, f.category, f.confidence, f.importance, f.valid_at, f.memory_tier, f.quality_score, f.contamination_score, f.retrievable, f.source_type, f.created_at "
             "ORDER BY coalesce(f.is_canonical, false) DESC, coalesce(f.quality_score, f.importance, 0) DESC, f.importance DESC LIMIT $p_lim",
             params
@@ -194,7 +210,8 @@ def search_facts(conn: kuzu.Connection, query: str, limit: int = 10,
     return results
 
 
-def search_episodes(conn: kuzu.Connection, query: str, limit: int = 10, agent_id: Optional[str] = None) -> list[dict]:
+def search_episodes(conn: kuzu.Connection, query: str, limit: int = 10, agent_id: Optional[str] = None,
+                    since: Optional[str] = None, until: Optional[str] = None) -> list[dict]:
     """Search episodes by content or summary."""
     results = []
     try:
@@ -204,11 +221,18 @@ def search_episodes(conn: kuzu.Connection, query: str, limit: int = 10, agent_id
         else:
             agent_filter = ""
             params = {"p_q": query, "p_lim": limit}
+        time_filter = ""
+        if since:
+            time_filter += " AND ep.occurred_at >= timestamp($p_since)"
+            params["p_since"] = since
+        if until:
+            time_filter += " AND ep.occurred_at <= timestamp($p_until)"
+            params["p_until"] = until
         result = conn.execute(
             "MATCH (ep:Episode) "
             "WHERE (lower(ep.summary) CONTAINS lower($p_q) OR lower(ep.content) CONTAINS lower($p_q))"
             " AND coalesce(ep.retrievable, true) = true"
-            + agent_filter +
+            + agent_filter + time_filter +
             " RETURN ep.id, ep.summary, ep.source_file, ep.occurred_at, ep.importance, ep.memory_tier, ep.quality_score, ep.contamination_score, ep.retrievable "
             "ORDER BY coalesce(ep.is_canonical, false) DESC, coalesce(ep.quality_score, ep.importance, 0) DESC, ep.occurred_at DESC LIMIT $p_lim",
             params
@@ -367,7 +391,8 @@ def get_entity_context(conn: kuzu.Connection, entity_name: str) -> dict:
     return context
 
 
-def unified_search(conn: kuzu.Connection, query: str, limit: int = 10, agent_id: Optional[str] = None) -> dict:
+def unified_search(conn: kuzu.Connection, query: str, limit: int = 10, agent_id: Optional[str] = None,
+                   since: Optional[str] = None, until: Optional[str] = None) -> dict:
     """Unified search across all memory types.
     
     Args:
@@ -375,9 +400,9 @@ def unified_search(conn: kuzu.Connection, query: str, limit: int = 10, agent_id:
                   agent_id matches OR agent_id = 'shared'. When None, returns all.
     """
     return {
-        "entities": search_entities(conn, query, limit, agent_id=agent_id),
-        "facts": search_facts(conn, query, limit, agent_id=agent_id),
-        "episodes": search_episodes(conn, query, limit, agent_id=agent_id)
+        "entities": search_entities(conn, query, limit, agent_id=agent_id, since=since, until=until),
+        "facts": search_facts(conn, query, limit, agent_id=agent_id, since=since, until=until),
+        "episodes": search_episodes(conn, query, limit, agent_id=agent_id, since=since, until=until)
     }
 
 
@@ -468,6 +493,8 @@ if __name__ == "__main__":
     parser.add_argument("--entity", type=str, help="Get full context for an entity")
     parser.add_argument("--type", choices=["entity", "fact", "episode", "all"], default="all")
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--since", type=str, default=None, help="ISO date filter (>=)")
+    parser.add_argument("--until", type=str, default=None, help="ISO date filter (<=)")
     parser.add_argument("--stats", action="store_true", help="Show database stats")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--json", "-j", action="store_true", help="Output as JSON")
@@ -500,13 +527,13 @@ if __name__ == "__main__":
         sys.exit(1)
     
     if args.type == "all":
-        results = unified_search(conn, args.query, args.limit)
+        results = unified_search(conn, args.query, args.limit, since=args.since, until=args.until)
     elif args.type == "entity":
-        results = {"entities": search_entities(conn, args.query, args.limit)}
+        results = {"entities": search_entities(conn, args.query, args.limit, since=args.since, until=args.until)}
     elif args.type == "fact":
-        results = {"facts": search_facts(conn, args.query, args.limit)}
+        results = {"facts": search_facts(conn, args.query, args.limit, since=args.since, until=args.until)}
     elif args.type == "episode":
-        results = {"episodes": search_episodes(conn, args.query, args.limit)}
+        results = {"episodes": search_episodes(conn, args.query, args.limit, since=args.since, until=args.until)}
     
     if args.json:
         print(json.dumps(results, indent=2, default=str))

@@ -30,7 +30,8 @@ def _get_conn(read_only=True):
     return get_conn(db)
 
 
-def query_memories(terms: str, agent_id: Optional[str] = None, limit: int = 8) -> dict:
+def query_memories(terms: str, agent_id: Optional[str] = None, limit: int = 8,
+                   since: Optional[str] = None, until: Optional[str] = None) -> dict:
     """Query Engram for relevant memories matching search terms.
 
     Splits multi-word queries into individual terms and searches each,
@@ -86,21 +87,21 @@ def query_memories(terms: str, agent_id: Optional[str] = None, limit: int = 8) -
         episode_map = {}
 
         for q in search_queries:
-            for e in search_entities(conn, q, limit=limit, agent_id=agent_id):
+            for e in search_entities(conn, q, limit=limit, agent_id=agent_id, since=since, until=until):
                 eid = e.get("id", "")
                 if eid not in entity_map:
                     e["_hits"] = 0
                     entity_map[eid] = e
                 entity_map[eid]["_hits"] = entity_map[eid].get("_hits", 0) + 1
 
-            for f in search_facts(conn, q, limit=limit, agent_id=agent_id):
+            for f in search_facts(conn, q, limit=limit, agent_id=agent_id, since=since, until=until):
                 fid = f.get("id", "")
                 if fid not in fact_map:
                     f["_hits"] = 0
                     fact_map[fid] = f
                 fact_map[fid]["_hits"] = fact_map[fid].get("_hits", 0) + 1
 
-            for ep in search_episodes(conn, q, limit=limit, agent_id=agent_id):
+            for ep in search_episodes(conn, q, limit=limit, agent_id=agent_id, since=since, until=until):
                 epid = ep.get("id", "")
                 if epid not in episode_map:
                     ep["_hits"] = 0
@@ -833,6 +834,8 @@ if __name__ == "__main__":
     q_parser.add_argument("terms", help="Search terms")
     q_parser.add_argument("--agent", type=str, default=None, help="Agent ID scope")
     q_parser.add_argument("--limit", type=int, default=8)
+    q_parser.add_argument("--since", type=str, default=None, help="ISO date filter (>=)")
+    q_parser.add_argument("--until", type=str, default=None, help="ISO date filter (<=)")
     q_parser.add_argument("--json", "-j", action="store_true", help="JSON output")
     q_parser.add_argument("--prompt", action="store_true", help="Prompt-ready format")
 
@@ -867,7 +870,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.command == "query":
-        results = query_memories(args.terms, agent_id=args.agent, limit=args.limit)
+        results = query_memories(args.terms, agent_id=args.agent, limit=args.limit, since=args.since, until=args.until)
         if args.prompt:
             print(format_for_prompt(results))
         elif args.json:
