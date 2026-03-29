@@ -84,6 +84,32 @@ TEXT:
 SOURCE FILE: {source_file}
 DATE: {date}
 
+## What to Extract (STORE)
+- Decisions that change future behavior
+- Project milestones and completions
+- Agent outcomes that had real impact
+- Todos, reminders, commitments
+- Stable relationships (people ↔ projects ↔ repos ↔ tools)
+- Preferences and operating rules
+- Errors ONLY if they taught a lesson or are recurring
+- Operational summaries ONLY if they materially changed something or exposed a systemic issue
+
+## What to SKIP (never extract)
+- Internal reasoning / chain-of-thought / think blocks
+- Secrets, passwords, tokens, API keys, auth commands
+- Heartbeat envelopes, reminder wrappers, transport boilerplate
+- Casual chatter, duplicates, routine success messages ("deployed OK", "build passed")
+- Transient status updates that won't matter next week
+
+## Pre-Store Test (every fact must pass ALL five)
+1. Durable next week? — Will this still matter in 7+ days?
+2. Actionable or explanatory? — Does it drive a future action or explain a past decision?
+3. Specific enough to retrieve? — Could someone search for this and find it useful?
+4. Safe? — No secrets, no reasoning traces, no auth tokens.
+5. Novel? — Not a duplicate of commonly known information.
+
+If a fact doesn't pass, DO NOT include it.
+
 Extract the following as JSON (and nothing else):
 
 {{
@@ -105,7 +131,8 @@ Extract the following as JSON (and nothing else):
   "facts": [
     {{
       "content": "A clear, standalone factual statement",
-      "category": "preference|decision|lesson|insight|context|technical",
+      "category": "preference|decision|lesson|milestone|action|technical",
+      "importance": "high|medium",
       "confidence": 0.9,
       "about": ["entity name(s) this fact concerns"]
     }}
@@ -128,8 +155,122 @@ Rules:
 - Entity names should be canonical (e.g., "The Dev" not "the dev" or "Dev")
 - Only extract entities that are meaningful and recurring, not throwaway mentions
 - Facts should be standalone — understandable without the source text
+- Only include facts with importance "high" or "medium" — skip low-value/transient facts entirely
 - If no emotions are apparent, return an empty emotions array
 - Return ONLY valid JSON, no markdown formatting"""
+
+
+# =========================================================
+# Extraction Policy Enforcement
+# =========================================================
+
+# Patterns that indicate never-store content
+NEVER_STORE_PATTERNS = [
+    re.compile(r'<think>.*?</think>', re.DOTALL),           # chain-of-thought
+    re.compile(r'HEARTBEAT_OK|NO_REPLY', re.IGNORECASE),    # heartbeat envelopes
+    re.compile(r"password\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE),  # passwords (quoted or bare)
+    re.compile(r"token\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE),     # tokens (quoted or bare)
+    re.compile(r"api[_-]?key\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE), # API keys (quoted or bare)
+    re.compile(r'Bearer\s+[A-Za-z0-9._\-]+', re.IGNORECASE),# auth headers
+    re.compile(r'xai-[A-Za-z0-9]{20,}'),                    # xAI keys
+    re.compile(r'sk-[A-Za-z0-9]{20,}'),                     # OpenAI keys
+    re.compile(r'ghp_[A-Za-z0-9]{20,}'),                    # GitHub PATs
+    re.compile(r'gho_[A-Za-z0-9]{20,}'),                    # GitHub OAuth tokens
+    re.compile(r'github_pat_[A-Za-z0-9_]{20,}'),            # GitHub fine-grained PATs
+    re.compile(r'AKIA[0-9A-Z]{16}'),                        # AWS access keys
+    re.compile(r'-----BEGIN[\s\S]*?PRIVATE KEY-----'),       # PEM private keys
+]
+
+# Fact content patterns that should never be stored
+NEVER_STORE_FACT_PATTERNS = [
+    re.compile(r'routine\s+(success|check|pass|ok)', re.IGNORECASE),
+    re.compile(r'heartbeat\s+(ok|ack|received)', re.IGNORECASE),
+    re.compile(r'cron\s+(ran|executed|completed)\s+(successfully|ok)', re.IGNORECASE),
+    re.compile(r'^(deployed|built|passed|ok|done|success|complete)\.?$', re.IGNORECASE),
+]
+
+IMPORTANCE_MAP = {
+    "high": 0.85,
+    "medium": 0.60,
+    "low": 0.25,
+}
+
+
+def strip_never_store_content(text: str) -> str:
+    """Remove content that should never be ingested before it hits the LLM."""
+    result = text
+    # Remove think blocks
+    result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL)
+    # Remove heartbeat/transport envelopes
+    result = re.sub(r'HEARTBEAT_OK|NO_REPLY', '', result, flags=re.IGNORECASE)
+    # Redact inline secrets (replace with [REDACTED])
+    for pattern in NEVER_STORE_PATTERNS[3:]:  # skip think/heartbeat (handled above), redact secrets
+        result = pattern.sub('[REDACTED]', result)
+    return result.strip()
+
+
+def passes_prestore_test(fact: dict) -> bool:
+    """Apply the 5-gate pre-store test to a candidate fact.
+    
+    Gates:
+    1. Durable next week?
+    2. Actionable or explanatory?
+    3. Specific enough to retrieve?
+    4. Safe (no secrets)?
+    5. Novel (not boilerplate)?
+    
+    Gates 1-2 are partially enforced by the LLM prompt; gates 3-5 are mechanical.
+    """
+    content = fact.get("content", "").strip()
+    
+    # Gate 3: Specific enough to retrieve? (too short = too vague)
+    if len(content) < 15:
+        return False
+    
+    # Gate 4: Safe? No secrets or auth tokens
+    for pattern in NEVER_STORE_PATTERNS:
+        if pattern.search(content):
+            return False
+    
+    # Gate 5: Not routine boilerplate
+    for pattern in NEVER_STORE_FACT_PATTERNS:
+        if pattern.search(content):
+            return False
+    
+    # LLM-assigned importance: skip anything explicitly marked low
+    importance = fact.get("importance", "medium")
+    if isinstance(importance, str) and importance.lower() == "low":
+        return False
+    # Also catch numeric importance below threshold (LLMs sometimes return floats)
+    if isinstance(importance, (int, float)) and importance < 0.3:
+        return False
+    
+    return True
+
+
+def fact_importance_score(fact: dict, source_meta: Optional[dict] = None) -> float:
+    """Convert LLM importance label + source metadata into a numeric score."""
+    source_meta = source_meta or {}
+    
+    # Use LLM-assigned importance if available
+    imp_label = fact.get("importance", "medium")
+    if isinstance(imp_label, str):
+        base = IMPORTANCE_MAP.get(imp_label.lower(), 0.60)
+    elif isinstance(imp_label, (int, float)):
+        base = float(imp_label)
+    else:
+        base = 0.60
+    
+    # Boost canonical sources
+    if source_meta.get("is_canonical"):
+        base = max(base, 0.75)
+    
+    # Category-based adjustments
+    category = fact.get("category", "context")
+    if category in ("decision", "preference", "lesson", "milestone"):
+        base = min(base + 0.10, 1.0)
+    
+    return round(base, 2)
 
 
 def normalize_entity_name(name: str) -> str:
@@ -247,16 +388,19 @@ def chunk_text(text: str, max_chars: int = 4000) -> list[str]:
 
 
 def call_llm(prompt: str) -> Optional[dict]:
-    """Call xAI Grok API for entity/relationship extraction.
+    """Call local Ollama (qwen3.5:35b-a3b) for entity/relationship extraction.
 
-    Key resolution order: XAI_API_KEY env → config.json xai_api_key → openclaw.json skills.entries.grok.apiKey
-    Model: ENGRAM_MODEL env → config.json model → grok-3-mini-fast
+    Falls back to xAI Grok if Ollama is unavailable.
     """
     try:
-        return _call_xai(prompt)
+        return _call_ollama(prompt)
     except Exception as e:
-        print(f"  ⚠️  LLM extraction failed: {e}")
-        return None
+        print(f"  ⚠️  Ollama extraction failed ({e}), falling back to xAI...")
+        try:
+            return _call_xai(prompt)
+        except Exception as e2:
+            print(f"  ⚠️  xAI fallback also failed: {e2}")
+            return None
 
 
 def _load_engram_config():
@@ -343,11 +487,11 @@ def _call_xai(prompt: str) -> Optional[dict]:
 
 
 def _call_ollama(prompt: str) -> Optional[dict]:
-    """Call local Ollama (qwen3:8b) for extraction."""
+    """Call local Ollama (qwen3.5:35b-a3b) for extraction."""
     import urllib.request
     
     payload = json.dumps({
-        "model": "qwen3:8b-q8_0",
+        "model": "qwen3.5:35b-a3b",
         "prompt": prompt,
         "stream": False,
         "format": "json",
@@ -676,10 +820,16 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
         except Exception as e:
             print(f"    ⚠️  Relationship '{from_name}'->{to_name}' failed: {e}")
     
-    # --- Store Facts ---
+    # --- Store Facts (with pre-store test) ---
+    skipped_facts = 0
     for fact in extraction.get("facts", []):
         content = fact.get("content", "").strip()
         if not content:
+            continue
+        
+        # Apply extraction policy pre-store test
+        if not passes_prestore_test(fact):
+            skipped_facts += 1
             continue
         
         fid = generate_id("fact", content.lower())
@@ -714,7 +864,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "p_quality": source_meta.get("quality_score", 0.5),
                     "p_contam": source_meta.get("contamination_score", 0.0),
                     "p_retrievable": source_meta.get("retrievable", True),
-                    "p_initial_importance": 0.75 if source_meta.get("is_canonical") else (0.5 if source_meta.get("is_candidate", True) else 0.12),
+                    "p_initial_importance": fact_importance_score(fact, source_meta),
                     "p_epid": episode_id,
                     "p_now": now_str
                 }
@@ -828,11 +978,16 @@ def ingest_file(conn: kuzu.Connection, filepath: Path, force: bool = False):
     for i, chunk in enumerate(chunks):
         if len(chunk.strip()) < 50:
             continue
+        
+        # Strip never-store content before extraction
+        clean_chunk = strip_never_store_content(chunk)
+        if len(clean_chunk.strip()) < 50:
+            continue
             
         print(f"   Chunk {i+1}/{len(chunks)}... ", end="", flush=True)
         
         prompt = EXTRACTION_PROMPT.format(
-            text=chunk,
+            text=clean_chunk,
             source_file=filepath.name,
             date=date_str or "unknown"
         )
@@ -878,8 +1033,13 @@ def _extract_file(filepath: Path) -> dict:
             if len(chunk.strip()) < 50:
                 continue
             
+            # Strip never-store content before extraction
+            clean_chunk = strip_never_store_content(chunk)
+            if len(clean_chunk.strip()) < 50:
+                continue
+            
             prompt = EXTRACTION_PROMPT.format(
-                text=chunk,
+                text=clean_chunk,
                 source_file=filepath.name,
                 date=result["date_str"] or "unknown"
             )

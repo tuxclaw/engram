@@ -384,10 +384,20 @@ def _extract_context_snippets(text: str) -> list[str]:
 def _build_live_candidates(text: str) -> list[dict]:
     candidates = []
 
+    # Import never-store patterns for safety gate
+    try:
+        from engram.ingest import NEVER_STORE_PATTERNS as _nsp
+    except ImportError:
+        _nsp = []
+
     def add(content: str, category: str, about: list[str]):
         content = _clean_space(content)
         if len(content) < 12:
             return
+        # Skip content containing secrets/tokens
+        for pat in _nsp:
+            if pat.search(content):
+                return
         norm = _normalize_fact_text(content)
         if any(_normalize_fact_text(c["content"]) == norm for c in candidates):
             return
@@ -540,7 +550,7 @@ def _parse_llm_fact_array(content: str) -> list[str]:
 
 
 def _store_live_candidates(conn, candidates: list[dict], agent_id: str, session_id: str, role: str, source_type: str, confidence: float, importance: float) -> dict:
-    from engram.ingest import generate_id
+    from engram.ingest import generate_id, passes_prestore_test, NEVER_STORE_PATTERNS
 
     all_names = []
     for cand in candidates:
@@ -555,6 +565,12 @@ def _store_live_candidates(conn, candidates: list[dict], agent_id: str, session_
 
     for cand in candidates[:LIVE_MAX_FACTS]:
         content = cand["content"]
+        
+        # Apply extraction policy pre-store test
+        if not passes_prestore_test(cand):
+            skipped.append({"content": content, "reason": "failed_prestore_test"})
+            continue
+        
         fact_id = generate_id("fact", content)
 
         try:
@@ -700,7 +716,21 @@ def extract_and_store_llm(text: str, agent_id: str, session_id: str, role: str =
         "messages": [
             {
                 "role": "system",
-                "content": "Extract key facts worth remembering from this message. Return a JSON array of strings, max 3 facts. Only meaningful, durable information (names, dates, decisions, preferences, events, relationships). If nothing worth remembering, return []. No explanations, just the JSON array.",
+                "content": (
+                    "Extract key facts worth remembering from this message. "
+                    "Return a JSON array of strings, max 3 facts.\n\n"
+                    "STORE: decisions, milestones, agent outcomes with impact, todos/commitments, "
+                    "stable relationships, preferences, operating rules, lessons from errors.\n"
+                    "SKIP: reasoning/chain-of-thought, secrets/tokens, heartbeat wrappers, "
+                    "casual chatter, duplicates, routine success spam, transient status.\n\n"
+                    "Pre-store test — each fact must pass ALL:\n"
+                    "1. Durable next week?\n"
+                    "2. Actionable or explanatory?\n"
+                    "3. Specific enough to retrieve later?\n"
+                    "4. Safe (no secrets)?\n"
+                    "5. Novel (not duplicate)?\n\n"
+                    "If nothing passes, return []. No explanations, just the JSON array."
+                ),
             },
             {"role": "user", "content": clean_text},
         ],
