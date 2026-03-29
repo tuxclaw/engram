@@ -35,7 +35,7 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 - PEM private keys
 - Content is stripped pre-extraction AND facts are re-scanned pre-storage (defense-in-depth)
 
-### Additional Components (vs. Upstream)
+### AE-Only Components
 - **Neo4j backend** — Richer graph queries and Cypher support (upstream uses Kuzu)
 - **Engram CLI** (`cli.py`) — 8 commands: search, entity, timeline, agent-history, facts, stats, briefing, health
 - **Batch extractor** (`batch_extract.py`) — Catches missed messages from session logs
@@ -44,7 +44,12 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 ### Modified from Upstream
 - **Dream consolidation** (`consolidate.py`) — Reduced decay from 1%/day to 0.2%/day. Safe because extraction policy already filters noise at ingest time.
 - **Assembly cache** — Cherry-picked from upstream v0.2.0. Session-scoped caching (3-min TTL for queries, 10-min for pinned facts).
+
+### Shared with Upstream
 - **Channel-scoped pinned context** — Inject standing rules per-channel or per-session
+- **Briefings** (`briefing.py`) — Generate session briefings from graph state
+- **Dashboard** (`dashboard/`) — Sigma.js graph visualization (optional)
+- **Dream consolidation** (`consolidate.py`) — Core consolidation pipeline (AE modifies the decay rate)
 
 ## Architecture
 
