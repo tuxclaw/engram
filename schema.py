@@ -273,6 +273,7 @@ def init_schema(conn: kuzu.Connection = None):
     # Run migrations for existing databases
     migrate_add_last_accessed(conn)
     migrate_add_agent_id(conn)
+    migrate_add_extraction_policy_fields(conn)
 
     print("✅ Engram schema initialized")
     return conn
@@ -329,6 +330,58 @@ def migrate_add_agent_id(conn: kuzu.Connection):
                 print(f"  ⚠️  Migration warning ({table}): {e}")
 
 
+def migrate_add_extraction_policy_fields(conn: kuzu.Connection):
+    """Migration: add extraction policy fields to Fact, Entity, Episode tables.
+    
+    Safe to run multiple times — checks if column exists before adding.
+    """
+    table_columns = {
+        "Fact": [
+            ("source_type", "STRING DEFAULT ''"),
+            ("memory_tier", "STRING DEFAULT 'candidate'"),
+            ("quality_score", "FLOAT DEFAULT 0.5"),
+            ("contamination_score", "FLOAT DEFAULT 0.0"),
+            ("retrievable", "BOOLEAN DEFAULT TRUE"),
+            ("is_candidate", "BOOLEAN DEFAULT TRUE"),
+            ("is_canonical", "BOOLEAN DEFAULT FALSE"),
+            ("session_id", "STRING DEFAULT ''"),
+            ("turn_role", "STRING DEFAULT ''"),
+            ("scope_type", "STRING DEFAULT ''"),
+            ("scope_id", "STRING DEFAULT ''"),
+            ("status", "STRING DEFAULT ''"),
+            ("resolved_at", "TIMESTAMP"),
+        ],
+        "Entity": [
+            ("source_type", "STRING DEFAULT ''"),
+            ("memory_tier", "STRING DEFAULT 'candidate'"),
+            ("quality_score", "FLOAT DEFAULT 0.5"),
+            ("contamination_score", "FLOAT DEFAULT 0.0"),
+            ("retrievable", "BOOLEAN DEFAULT TRUE"),
+            ("is_candidate", "BOOLEAN DEFAULT TRUE"),
+            ("is_canonical", "BOOLEAN DEFAULT FALSE"),
+        ],
+        "Episode": [
+            ("source_type", "STRING DEFAULT ''"),
+            ("memory_tier", "STRING DEFAULT 'candidate'"),
+            ("quality_score", "FLOAT DEFAULT 0.5"),
+            ("contamination_score", "FLOAT DEFAULT 0.0"),
+            ("retrievable", "BOOLEAN DEFAULT TRUE"),
+            ("is_candidate", "BOOLEAN DEFAULT TRUE"),
+            ("is_canonical", "BOOLEAN DEFAULT FALSE"),
+        ],
+    }
+    for table, columns in table_columns.items():
+        for col, ddl in columns:
+            try:
+                conn.execute(f"MATCH (n:{table}) RETURN n.{col} LIMIT 1")
+            except Exception:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD {col} {ddl}")
+                    print(f"  ✅ Migration: added {col} to {table}")
+                except Exception as e:
+                    print(f"  ⚠️  Migration warning ({table}.{col}): {e}")
+
+
 def get_stats(conn: kuzu.Connection = None) -> dict:
     """Get node and relationship counts."""
     if conn is None:
@@ -360,7 +413,7 @@ def get_stats(conn: kuzu.Connection = None) -> dict:
 
 def print_stats(stats: dict):
     """Pretty-print database statistics."""
-    print("\n📊 Engram Database Stats")
+    print("\n📊 Engram Database Stats (Kuzu)")
     print("=" * 40)
     
     print("\nNodes:")

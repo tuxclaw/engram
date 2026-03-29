@@ -1,9 +1,9 @@
 # Engram (AE) ⚡ — Andy's Edition
 
 > Graph memory for [OpenClaw](https://github.com/openclaw/openclaw) agents.  
-> Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram) with Neo4j backend, extraction policy enforcement, CLI tooling, and automated pipeline.
+> Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram) with Kuzu backend (embedded), extraction policy enforcement, CLI tooling, and automated pipeline.
 
-Engram (AE) is a temporal knowledge graph memory system for OpenClaw agents. It extracts entities, facts, relationships, and emotions from conversations and daily logs, stores them in a [Neo4j](https://neo4j.com) graph database, and injects relevant context into every agent turn.
+Engram (AE) is a temporal knowledge graph memory system for OpenClaw agents. It extracts entities, facts, relationships, and emotions from conversations and daily logs, stores them in a [Kuzu](https://kuzudb.com) embedded graph database, and injects relevant context into every agent turn.
 
 ## What Makes AE Different
 
@@ -36,7 +36,7 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 - Content is stripped pre-extraction AND facts are re-scanned pre-storage (defense-in-depth)
 
 ### AE-Only Components
-- **Neo4j backend** — Richer graph queries and Cypher support (upstream uses Kuzu)
+- **Kuzu backend (embedded)** — Zero-ops local graph DB (upstream uses Kuzu)
 - **Engram CLI** (`cli.py`) — 14 commands: search, entity, timeline, agent-history, facts, stats, briefing, health, dispatch, todos, todo-add, todo-done, contradictions, recent
 - **Batch extractor** (`batch_extract.py`) — Catches missed messages from session logs
 - **Importance scoring** — LLM assigns `high`/`medium` labels, converted to numeric scores with category bonuses
@@ -66,7 +66,7 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
   │                                    ↓                      │
   │                         Pre-store test (5 gates)          │
   │                                    ↓                      │
-  │                             Neo4j Graph DB                │
+  │                        Kuzu Graph DB (embedded)            │
   │                                    ↑                      │
   │  Agent turn  ← assemble hook ← Context query (cached)     │
   └─────────────────────────────────────────────────────────┘
@@ -78,7 +78,7 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
   │                             ↓                             │
   │                    Secret redaction + policy filter        │
   │                             ↓                             │
-  │                        Neo4j Graph DB                     │
+  │                     Kuzu Graph DB (embedded)               │
   │                                                          │
   │  Session JSONL → batch_extract.py (every 30 min)         │
   │  Graph DB → consolidate.py (daily)                       │
@@ -95,7 +95,7 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 | `context_query.py` | **Context queries** — semantic + graph search, live extraction (regex + LLM) |
 | `batch_extract.py` | **Batch extractor** — scans session logs, re-extracts missed messages |
 | `consolidate.py` | **Dream consolidation** — gentle decay, centrality boost, dedup |
-| `schema_neo4j.py` | **Neo4j schema** — node/relationship definitions |
+| `schema_neo4j.py` | **Neo4j schema (fallback)** — node/relationship definitions |
 | `briefing.py` | **Briefings** — full + delta briefings from graph state |
 | `dispatch_context.py` | **Pre-dispatch** — agent + project context for prompt building |
 | `todos.py` | **Todos** — track, add, resolve todos as first-class facts |
@@ -106,38 +106,25 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 
 ## Quick Start
 
-### 1. Neo4j
-
-```bash
-podman run -d --name neo4j-engram \
-  -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/your-password \
-  -v neo4j-data:/data \
-  neo4j:5-community
-```
-
-### 2. Python Dependencies
+### 1. Python Dependencies (Kuzu)
 
 ```bash
 python3 -m venv .venv-memory
 source .venv-memory/bin/activate
 pip install -r requirements.txt
-pip install neo4j
+pip install kuzu
 ```
 
-### 3. Configuration
+### 2. Configuration
 
 ```bash
 cp config.json.example config.json
 # Edit config.json:
-#   backend: "neo4j"
-#   neo4j.uri: "bolt://localhost:7687"
-#   neo4j.user: "neo4j"
-#   neo4j.password: "your-password"
+#   backend: "kuzu"
 #   xai_api_key: "your-xai-key"
 ```
 
-### 4. Initial Ingest
+### 3. Initial Ingest
 
 ```bash
 # Run bulk ingest with parallel workers
@@ -150,7 +137,7 @@ python cli.py stats
 python cli.py health
 ```
 
-### 5. Context Engine Plugin (OpenClaw)
+### 4. Context Engine Plugin (OpenClaw)
 
 Copy or symlink `extensions/context-engine/` into your OpenClaw extensions directory, then configure the plugin in your OpenClaw config. See [`SKILL.md`](SKILL.md) for detailed setup.
 
@@ -229,14 +216,14 @@ Every node carries an `agent_id` field for multi-agent memory isolation.
 ## Requirements
 
 - Python 3.10+
-- [Neo4j](https://neo4j.com) 5+ (Community Edition)
+- [Kuzu](https://kuzudb.com) (pip package)
 - xAI API key (for `grok-4-1-fast-non-reasoning` extraction)
 - [OpenClaw](https://github.com/openclaw/openclaw) (for context engine plugin)
 - Node.js 18+ (dashboard only)
 
 ## Upstream
 
-Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram). Upstream uses Kuzu as the default graph backend and Ollama for extraction. AE uses Neo4j and xAI exclusively.
+Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram). Upstream uses Kuzu as the default graph backend and Ollama for extraction. AE uses Kuzu (embedded) and xAI exclusively.
 
 ## License
 

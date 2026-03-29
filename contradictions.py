@@ -155,7 +155,7 @@ def supersede_fact(conn: kuzu.Connection, old_fact_id: str, new_fact_id: str) ->
         conn.execute(
             "MATCH (old:Fact {id: $p_old}), (new:Fact {id: $p_new}) "
             "MERGE (new)-[r:SUPERSEDES]->(old) "
-            "ON CREATE SET r.created_at = datetime($p_now)",
+            "ON CREATE SET r.created_at = timestamp($p_now)",
             {"p_old": old_fact_id, "p_new": new_fact_id, "p_now": now}
         )
         conn.execute(

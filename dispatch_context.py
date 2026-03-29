@@ -67,24 +67,43 @@ def get_dispatch_context(conn: kuzu.Connection, agent_name: str, project_name: O
 
     # Agent history: facts about agent or by agent_id
     try:
-        where_parts = ["f.agent_id = $p_agent"]
+        combined = []
         params = {"p_agent": agent_name, "p_limit": 12}
-        if agent_entity:
-            where_parts.append("exists { MATCH (f)-[:ABOUT]->(:Entity {id: $p_eid}) }")
-            params["p_eid"] = agent_entity["id"]
-        where_clause = " OR ".join(where_parts)
         result = conn.execute(
             "MATCH (f:Fact) "
-            f"WHERE {where_clause} "
+            "WHERE f.agent_id = $p_agent "
             "RETURN f.content, f.category, f.created_at "
             "ORDER BY f.created_at DESC LIMIT $p_limit",
             params
         )
         while result.has_next():
             row = result.get_next()
-            agent_facts.append({
-                "content": row[0], "category": row[1], "created_at": str(row[2])
+            combined.append({
+                "content": row[0], "category": row[1], "_created_at": row[2]
             })
+        if agent_entity:
+            result = conn.execute(
+                "MATCH (f:Fact)-[:ABOUT]->(e:Entity {id: $p_eid}) "
+                "RETURN f.content, f.category, f.created_at "
+                "ORDER BY f.created_at DESC LIMIT $p_limit",
+                {"p_eid": agent_entity["id"], "p_limit": params["p_limit"]}
+            )
+            while result.has_next():
+                row = result.get_next()
+                combined.append({
+                    "content": row[0], "category": row[1], "_created_at": row[2]
+                })
+        if combined:
+            combined.sort(
+                key=lambda x: (x.get("_created_at") is None, x.get("_created_at") or datetime.min),
+                reverse=True
+            )
+            for item in combined[:params["p_limit"]]:
+                agent_facts.append({
+                    "content": item.get("content", ""),
+                    "category": item.get("category", ""),
+                    "created_at": str(item.get("_created_at")),
+                })
     except Exception:
         pass
 
@@ -136,26 +155,50 @@ def get_dispatch_context(conn: kuzu.Connection, agent_name: str, project_name: O
 
     # Key decisions: decision facts about agent or project
     try:
+        combined = []
         params = {"p_limit": 8, "p_agent_name": agent_name}
-        where_parts = ["lower(f.category) = 'decision'"]
-        scoped_parts = ["f.agent_id = $p_agent_name"]
-        if agent_entity:
-            scoped_parts.append("exists { MATCH (f)-[:ABOUT]->(:Entity {id: $p_agent_eid}) }")
-            params["p_agent_eid"] = agent_entity["id"]
-        if project_entity:
-            scoped_parts.append("exists { MATCH (f)-[:ABOUT]->(:Entity {id: $p_project_eid}) }")
-            params["p_project_eid"] = project_entity["id"]
-        where_clause = " AND (" + " OR ".join(scoped_parts) + ")"
         result = conn.execute(
             "MATCH (f:Fact) "
-            f"WHERE {where_parts[0]}{where_clause} "
+            "WHERE lower(f.category) = 'decision' AND f.agent_id = $p_agent_name "
             "RETURN f.content, f.created_at "
             "ORDER BY f.created_at DESC LIMIT $p_limit",
             params
         )
         while result.has_next():
             row = result.get_next()
-            key_decisions.append({"content": row[0], "created_at": str(row[1])})
+            combined.append({"content": row[0], "_created_at": row[1]})
+        if agent_entity:
+            result = conn.execute(
+                "MATCH (f:Fact)-[:ABOUT]->(e:Entity {id: $p_agent_eid}) "
+                "WHERE lower(f.category) = 'decision' "
+                "RETURN f.content, f.created_at "
+                "ORDER BY f.created_at DESC LIMIT $p_limit",
+                {"p_agent_eid": agent_entity["id"], "p_limit": params["p_limit"]}
+            )
+            while result.has_next():
+                row = result.get_next()
+                combined.append({"content": row[0], "_created_at": row[1]})
+        if project_entity:
+            result = conn.execute(
+                "MATCH (f:Fact)-[:ABOUT]->(e:Entity {id: $p_project_eid}) "
+                "WHERE lower(f.category) = 'decision' "
+                "RETURN f.content, f.created_at "
+                "ORDER BY f.created_at DESC LIMIT $p_limit",
+                {"p_project_eid": project_entity["id"], "p_limit": params["p_limit"]}
+            )
+            while result.has_next():
+                row = result.get_next()
+                combined.append({"content": row[0], "_created_at": row[1]})
+        if combined:
+            combined.sort(
+                key=lambda x: (x.get("_created_at") is None, x.get("_created_at") or datetime.min),
+                reverse=True
+            )
+            for item in combined[:params["p_limit"]]:
+                key_decisions.append({
+                    "content": item.get("content", ""),
+                    "created_at": str(item.get("_created_at")),
+                })
     except Exception:
         pass
 
