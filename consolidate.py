@@ -36,14 +36,18 @@ from engram.backend import get_db, get_conn, get_stats, print_stats
 
 def decay_importance(conn: kuzu.Connection, decay_rate: float = 0.02,
                      min_importance: float = 0.1, dry_run: bool = False) -> int:
-    """Exponential time-based importance decay for entities and facts.
+    """Gentle exponential importance decay for entities and facts.
     
-    new_importance = importance × 0.99^days_since_last_accessed
+    new_importance = importance × 0.998^days_since_last_accessed
+    ~0.2%/day — facts stay near full strength for months, gently
+    recede over a year. Safe because extraction policy already
+    filters noise at ingest time (March 2026).
+    
     Falls back to created_at if last_accessed is null.
     Never decays below min_importance (default 0.1).
     
     decay_rate parameter is kept for API compatibility but ignored —
-    the 0.99 base is fixed for the exponential model.
+    the 0.998 base is fixed for the exponential model.
     """
     count = 0
     now = datetime.now()
@@ -81,7 +85,7 @@ def decay_importance(conn: kuzu.Connection, decay_rate: float = 0.02,
                             days_elapsed = 0.0
 
                 days_elapsed = max(0.0, days_elapsed)
-                new_importance = importance * (0.99 ** days_elapsed)
+                new_importance = importance * (0.998 ** days_elapsed)
                 new_importance = max(min_importance, new_importance)
 
                 if not dry_run:
