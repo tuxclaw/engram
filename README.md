@@ -1,42 +1,77 @@
-# Engram — Graph Memory for OpenClaw Agents
+# Engram (AE) ⚡ — Andy's Edition
 
-> Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram) with Neo4j backend, CLI tooling, automated extraction pipeline, and dream consolidation.
+> Graph memory for [OpenClaw](https://github.com/openclaw/openclaw) agents.  
+> Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram) with Neo4j backend, extraction policy enforcement, CLI tooling, and automated pipeline.
 
-Engram is a temporal knowledge graph memory system for [OpenClaw](https://github.com/openclaw/openclaw) agents. It extracts entities, facts, relationships, and emotions from conversations, stores them in a [Neo4j](https://neo4j.com) graph database, and injects relevant context into every agent turn.
+Engram (AE) is a temporal knowledge graph memory system for OpenClaw agents. It extracts entities, facts, relationships, and emotions from conversations and daily logs, stores them in a [Neo4j](https://neo4j.com) graph database, and injects relevant context into every agent turn.
 
-## What's Different in This Fork
+## What Makes AE Different
 
-This fork adds several components on top of the upstream Engram project:
+This fork diverges significantly from upstream Engram:
 
-- **Neo4j backend** — Switched from Kuzu to Neo4j for richer graph queries and Cypher support
-- **Engram CLI** (`cli.py`) — Unified command-line interface for searching, querying, and managing the graph
-- **Batch extractor** (`batch_extract.py`) — Catches missed messages by scanning session logs on a cron schedule
-- **Always-on LLM extraction** — Both regex AND LLM extraction run on every message (not gated)
-- **Dream consolidation** (`consolidate.py`) — Nightly pipeline for importance decay, centrality boost, dedup, and emotional pattern tracking
-- **Context Engine plugin** — OpenClaw plugin that injects graph memories into agent context and extracts new facts after each turn
-- **Channel-scoped pinned context** — Inject pinned facts per-channel for targeted memory
+### Extraction Policy
+The core difference. AE enforces a strict extraction policy ([`EXTRACTION_POLICY.md`](EXTRACTION_POLICY.md)) that ensures only durable, actionable knowledge enters the graph.
+
+**Store by default:** Decisions, milestones, agent outcomes, todos, stable relationships, preferences, operating rules.
+
+**Never store:** Reasoning/chain-of-thought, secrets/tokens, heartbeat wrappers, casual chatter, routine success spam.
+
+**Every fact passes a 5-gate pre-store test:**
+1. Durable next week?
+2. Actionable or explanatory?
+3. Specific enough to retrieve?
+4. Safe (no secrets)?
+5. Novel (not duplicate)?
+
+**Result:** 90% noise reduction vs. unfiltered ingestion (3,590 → 354 nodes on identical source data).
+
+### Extraction Model
+AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Ollama, no local models. Local models lack the judgment needed for policy enforcement. Non-reasoning mode is used because extraction doesn't need chain-of-thought — it needs good judgment on a clear rubric.
+
+### Security
+13 compiled secret-detection patterns catch and redact sensitive content before it reaches the LLM or the graph:
+- API keys (`sk-`, `ghp_`, `gho_`, `github_pat_`, `xai-`, `AKIA`)
+- Auth tokens (`Bearer`, quoted passwords/tokens)
+- PEM private keys
+- Content is stripped pre-extraction AND facts are re-scanned pre-storage (defense-in-depth)
+
+### Additional Components (vs. Upstream)
+- **Neo4j backend** — Richer graph queries and Cypher support (upstream uses Kuzu)
+- **Engram CLI** (`cli.py`) — 8 commands: search, entity, timeline, agent-history, facts, stats, briefing, health
+- **Batch extractor** (`batch_extract.py`) — Catches missed messages from session logs
+- **Dream consolidation** (`consolidate.py`) — Gentle importance decay (0.2%/day), centrality boost, dedup, emotional patterns
+- **Assembly cache** — Session-scoped caching in the context engine plugin (3-min TTL for queries, 10-min for pinned facts)
+- **Channel-scoped pinned context** — Inject standing rules per-channel or per-session
+- **Importance scoring** — LLM assigns `high`/`medium` labels, converted to numeric scores with category bonuses
 
 ## Architecture
 
 ```
-  ┌─────────────────────────────────────────────────────┐
-  │                   Live Pipeline                      │
-  │                                                      │
-  │  User message → afterTurn hook → Regex + LLM extract │
-  │                                    ↓                  │
-  │                              Neo4j Graph DB           │
-  │                                    ↑                  │
-  │  Agent turn  ← assemble hook ← Context query          │
-  └─────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────┐
+  │                    Live Pipeline                         │
+  │                                                          │
+  │  User message → afterTurn hook → Regex + LLM extract     │
+  │                                    ↓                      │
+  │                         Pre-store test (5 gates)          │
+  │                                    ↓                      │
+  │                             Neo4j Graph DB                │
+  │                                    ↑                      │
+  │  Agent turn  ← assemble hook ← Context query (cached)     │
+  └─────────────────────────────────────────────────────────┘
 
-  ┌─────────────────────────────────────────────────────┐
-  │                 Background Pipeline                  │
-  │                                                      │
-  │  Session JSONL → batch_extract.py (every 30 min)     │
-  │  Graph DB → consolidate.py (daily 4 AM)              │
-  │    → importance decay, centrality boost, dedup        │
-  │    → relationship strengthening, emotional patterns   │
-  └─────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────┐
+  │                  Background Pipeline                     │
+  │                                                          │
+  │  Daily logs → ingest.py → grok-4-1-fast-non-reasoning    │
+  │                             ↓                             │
+  │                    Secret redaction + policy filter        │
+  │                             ↓                             │
+  │                        Neo4j Graph DB                     │
+  │                                                          │
+  │  Session JSONL → batch_extract.py (every 30 min)         │
+  │  Graph DB → consolidate.py (daily)                       │
+  │    → gentle decay, centrality boost, dedup               │
+  └─────────────────────────────────────────────────────────┘
 ```
 
 ## Components
@@ -44,23 +79,21 @@ This fork adds several components on top of the upstream Engram project:
 | Component | Description |
 |---|---|
 | `cli.py` | **CLI** — search, entity, timeline, agent-history, facts, stats, briefing, health |
+| `ingest.py` | **Bulk ingest** — parallel LLM extraction with policy enforcement |
+| `context_query.py` | **Context queries** — semantic + graph search, live extraction (regex + LLM) |
 | `batch_extract.py` | **Batch extractor** — scans session logs, re-extracts missed messages |
-| `consolidate.py` | **Dream consolidation** — nightly maintenance (decay, boost, dedup) |
-| `schema_neo4j.py` | **Neo4j schema** — node/relationship definitions for Neo4j backend |
-| `context_query.py` | **Context queries** — semantic + graph search for agent context injection |
-| `ingest.py` | **Bulk ingest** — parallel LLM extraction from markdown/session exports |
-| `dedup_entities.py` | **Entity dedup** — normalize and merge duplicate entities |
+| `consolidate.py` | **Dream consolidation** — gentle decay, centrality boost, dedup |
+| `schema_neo4j.py` | **Neo4j schema** — node/relationship definitions |
 | `briefing.py` | **Briefings** — generate session briefings from graph state |
-| `extensions/context-engine/` | **OpenClaw plugin** — hooks into assemble() + afterTurn() |
+| `EXTRACTION_POLICY.md` | **Policy** — canonical reference for what gets stored, skipped, and scored |
+| `extensions/context-engine/` | **OpenClaw plugin** — assemble() + afterTurn() hooks with assembly cache |
 | `dashboard/` | **Dashboard** — Sigma.js graph visualization (optional) |
-| `skills/engram/` | **Skill** — OpenClaw setup guide |
 
 ## Quick Start
 
 ### 1. Neo4j
 
 ```bash
-# Start Neo4j via Podman (or Docker)
 podman run -d --name neo4j-engram \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/your-password \
@@ -74,30 +107,29 @@ podman run -d --name neo4j-engram \
 python3 -m venv .venv-memory
 source .venv-memory/bin/activate
 pip install -r requirements.txt
-# Plus: neo4j (driver)
 pip install neo4j
 ```
 
 ### 3. Configuration
 
 ```bash
-cp config.example.json config.json
+cp config.json.example config.json
 # Edit config.json:
 #   backend: "neo4j"
 #   neo4j.uri: "bolt://localhost:7687"
 #   neo4j.user: "neo4j"
 #   neo4j.password: "your-password"
-#   llm.provider: "xai" (or "ollama" for local models)
+#   xai_api_key: "your-xai-key"
 ```
 
 ### 4. Initial Ingest
 
 ```bash
-# Export OpenClaw session logs
-python export_sessions.py
-
 # Run bulk ingest with parallel workers
 python ingest.py --workers 6
+
+# Check graph stats
+python cli.py stats
 
 # Check graph health
 python cli.py health
@@ -105,23 +137,13 @@ python cli.py health
 
 ### 5. Context Engine Plugin (OpenClaw)
 
-Copy or symlink `extensions/context-engine/` into your OpenClaw extensions directory, then patch your OpenClaw config to load the plugin. See [`SKILL.md`](SKILL.md) for detailed setup.
+Copy or symlink `extensions/context-engine/` into your OpenClaw extensions directory, then configure the plugin in your OpenClaw config. See [`SKILL.md`](SKILL.md) for detailed setup.
 
 ## CLI Usage
-
-Install the CLI wrapper for easy access:
-
-```bash
-# Create a wrapper script at ~/.local/bin/engram
-# that activates the venv and runs cli.py
-```
-
-### Commands
 
 ```bash
 engram search "CalCity Stripe"                  # Search everything
 engram entity "Woody"                           # Full context for an entity
-engram entity "Woody" --relationships           # Just relationships
 engram timeline "CalCity" --days 30             # Project/entity timeline
 engram agent-history "Buzz" --project CalCity   # What an agent built
 engram facts --recent --days 7                  # Recent facts
@@ -132,37 +154,31 @@ engram health                                   # Graph health check
 
 All commands support `--json` for structured output.
 
-### Aliases
+## Extraction Policy
 
-| Alias | Command |
-|---|---|
-| `s` | search |
-| `e` | entity |
-| `t` | timeline |
-| `ah` | agent-history |
-| `f` | facts |
-| `b` | briefing |
-| `h` | health |
+The extraction policy is the heart of AE. See [`EXTRACTION_POLICY.md`](EXTRACTION_POLICY.md) for the full spec.
 
-## Automated Pipeline
+**Goal:** Engram should answer:
+- What changed?
+- Why did we decide that?
+- Who worked on it?
+- What's still pending?
 
-### Live Extraction (every turn)
-The Context Engine plugin runs after each agent turn:
-1. Regex extraction — fast pattern matching for common fact structures
-2. LLM extraction — deeper semantic extraction (both run, not gated)
-3. Facts stored in Neo4j with entity linking and timestamps
+Not: every intermediate thought or cron wrapper.
 
-### Batch Catch-Up (every 30 min)
-```bash
-python batch_extract.py --hours 1 --agent main
-```
-Scans session JSONL logs for messages the live hook missed (gateway restarts, errors, etc.). Built-in dedup prevents duplicate facts.
+**Importance scoring:**
 
-### Dream Consolidation (daily at 4 AM)
-```bash
-python consolidate.py
-```
-- **Importance decay** — older facts gradually lose weight
+| Level | Score | What qualifies |
+|---|---|---|
+| High | 0.80–1.0 | Decisions, milestones, durable preferences, major lessons |
+| Medium | 0.50–0.70 | Agent outcomes, meaningful run summaries, useful todos |
+| Low | Skip | Transient status, repetitive output, scratch text |
+
+## Dream Consolidation
+
+Runs daily. Maintains graph health:
+
+- **Gentle importance decay** — 0.2%/day (~0.998^days). Facts stay near full strength for months, gently recede over a year.
 - **Centrality boost** — highly-connected entities get importance bumps
 - **Deduplication** — merge near-duplicate facts
 - **Relationship strengthening** — reinforce frequently co-occurring entity links
@@ -170,39 +186,23 @@ python consolidate.py
 
 ## Schema
 
-**Nodes:**
-- `Entity` — people, projects, tools, concepts
-- `Fact` — atomic knowledge units with timestamps and importance scores
-- `Episode` — session-level groupings
-- `Emotion` — tracked emotional states
+**Nodes:** `Entity`, `Fact`, `Episode`, `Emotion`, `SessionState`
 
-**Relationships:**
-`RELATES_TO`, `CAUSED`, `PART_OF`, `MENTIONED_IN`, `EPISODE_EVOKES`, `ENTITY_EVOKES`, `DERIVED_FROM`, `ABOUT`, `SUPERSEDES`
+**Relationships:** `RELATES_TO`, `CAUSED`, `PART_OF`, `MENTIONED_IN`, `EPISODE_EVOKES`, `ENTITY_EVOKES`, `DERIVED_FROM`, `ABOUT`
 
 Every node carries an `agent_id` field for multi-agent memory isolation.
-
-## Dashboard (Optional)
-
-```bash
-cd dashboard
-npm install && npm run bundle
-pm2 start ecosystem.config.js
-# → http://localhost:3847
-```
-
-Sigma.js graph visualization with per-agent filtering, entity search, node detail view, and connection explorer.
 
 ## Requirements
 
 - Python 3.10+
-- [Neo4j](https://neo4j.com) 5+ (Community Edition works)
-- Node.js 18+ (dashboard only)
-- LLM API access (xAI/Grok by default, or local via Ollama)
+- [Neo4j](https://neo4j.com) 5+ (Community Edition)
+- xAI API key (for `grok-4-1-fast-non-reasoning` extraction)
 - [OpenClaw](https://github.com/openclaw/openclaw) (for context engine plugin)
+- Node.js 18+ (dashboard only)
 
 ## Upstream
 
-This is a fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram). Upstream uses Kuzu as the default graph backend. This fork switched to Neo4j and added the CLI, batch extraction, and consolidation pipeline.
+Fork of [Atomlaunch/engram](https://github.com/Atomlaunch/engram). Upstream uses Kuzu as the default graph backend and Ollama for extraction. AE uses Neo4j and xAI exclusively.
 
 ## License
 
