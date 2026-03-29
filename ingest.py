@@ -783,7 +783,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             conn.execute(
                 "MATCH (ent:Entity {id: $p_eid}), (ep:Episode {id: $p_epid}) "
                 "MERGE (ent)-[r:MENTIONED_IN]->(ep) "
-                "ON CREATE SET r.created_at = datetime($p_now)",
+                "ON CREATE SET r.created_at = timestamp($p_now)",
                 {"p_eid": eid, "p_epid": episode_id, "p_now": now_str}
             )
             
@@ -828,7 +828,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "MATCH (a:Entity {id: $p_fid}), (b:Entity {id: $p_tid}) "
                     "MERGE (a)-[r:CAUSED]->(b) "
                     "ON CREATE SET r.description = $p_desc, r.confidence = 0.7, "
-                    "r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
+                    "r.valid_at = timestamp($p_vat), r.created_at = timestamp($p_now)",
                     {
                         "p_fid": from_id, "p_tid": to_id,
                         "p_desc": rel.get("description", ""),
@@ -840,7 +840,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "MATCH (a:Entity {id: $p_fid}), (b:Entity {id: $p_tid}) "
                     "MERGE (a)-[r:PART_OF]->(b) "
                     "ON CREATE SET r.role = $p_role, "
-                    "r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
+                    "r.valid_at = timestamp($p_vat), r.created_at = timestamp($p_now)",
                     {
                         "p_fid": from_id, "p_tid": to_id,
                         "p_role": rel.get("description", ""),
@@ -852,7 +852,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     "MATCH (a:Entity {id: $p_fid}), (b:Entity {id: $p_tid}) "
                     "MERGE (a)-[r:RELATES_TO {relation_type: $p_rtype}]->(b) "
                     "ON CREATE SET r.description = $p_desc, "
-                    "r.strength = 0.5, r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
+                    "r.strength = 0.5, r.valid_at = timestamp($p_vat), r.created_at = timestamp($p_now)",
                     {
                         "p_fid": from_id, "p_tid": to_id,
                         "p_rtype": rel_type,
@@ -929,7 +929,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             conn.execute(
                 "MATCH (f:Fact {id: $p_fid}), (ep:Episode {id: $p_epid}) "
                 "MERGE (f)-[r:DERIVED_FROM]->(ep) "
-                "ON CREATE SET r.extraction_method = 'llm', r.created_at = datetime($p_now)",
+                "ON CREATE SET r.extraction_method = 'llm', r.created_at = timestamp($p_now)",
                 {"p_fid": fid, "p_epid": episode_id, "p_now": now_str}
             )
             
@@ -940,7 +940,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                     conn.execute(
                         "MATCH (f:Fact {id: $p_fid}), (e:Entity {id: $p_eid}) "
                         "MERGE (f)-[r:ABOUT]->(e) "
-                        "ON CREATE SET r.aspect = $p_asp, r.created_at = datetime($p_now)",
+                        "ON CREATE SET r.aspect = $p_asp, r.created_at = timestamp($p_now)",
                         {
                             "p_fid": fid, "p_eid": about_id,
                             "p_asp": category,
@@ -998,7 +998,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
             conn.execute(
                 "MATCH (ep:Episode {id: $p_epid}), (em:Emotion {id: $p_emid}) "
                 "MERGE (ep)-[r:EPISODE_EVOKES]->(em) "
-                "ON CREATE SET r.intensity = $p_int, r.created_at = datetime($p_now)",
+                "ON CREATE SET r.intensity = $p_int, r.created_at = timestamp($p_now)",
                 {
                     "p_epid": episode_id, "p_emid": emid,
                     "p_int": emotion.get("arousal", 0.5),
@@ -1014,7 +1014,7 @@ def store_extraction(conn: kuzu.Connection, extraction: dict,
                         "MATCH (e:Entity {id: $p_eid}), (em:Emotion {id: $p_emid}) "
                         "MERGE (e)-[r:ENTITY_EVOKES]->(em) "
                         "ON CREATE SET r.context = $p_ctx, r.intensity = $p_int, "
-                        "r.valid_at = datetime($p_vat), r.created_at = datetime($p_now)",
+                        "r.valid_at = timestamp($p_vat), r.created_at = timestamp($p_now)",
                         {
                             "p_eid": about_id, "p_emid": emid,
                             "p_ctx": emotion.get("context", ""),

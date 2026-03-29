@@ -523,7 +523,7 @@ def cmd_contradictions(args):
     try:
         result = conn.execute(
             "MATCH (new:Fact)-[r:SUPERSEDES]->(old:Fact) "
-            "WHERE r.created_at >= datetime($p_cutoff) "
+            "WHERE r.created_at >= timestamp($p_cutoff) "
             "RETURN new.id, new.content, old.id, old.content, r.created_at "
             "ORDER BY r.created_at DESC LIMIT $p_limit",
             {"p_cutoff": cutoff, "p_limit": 50}
@@ -706,9 +706,10 @@ def cmd_health(args):
     # 4. Check for orphan facts (no entity connections)
     try:
         result = conn.execute(
-            "MATCH (f:Fact) "
-            "WHERE NOT exists { MATCH (f)-[:ABOUT]->(:Entity) } "
-            "RETURN count(*)"
+            "OPTIONAL MATCH (f:Fact)-[r:ABOUT]->(:Entity) "
+            "WITH f, count(r) AS links "
+            "WHERE links = 0 "
+            "RETURN count(f)"
         )
         if result.has_next():
             count = result.get_next()[0]

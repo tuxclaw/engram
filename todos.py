@@ -115,7 +115,7 @@ def add_todo(conn: kuzu.Connection, content: str, agent_id: str = "main", about_
                 conn.execute(
                     "MATCH (f:Fact {id: $p_fid}), (e:Entity {id: $p_eid}) "
                     "MERGE (f)-[r:ABOUT]->(e) "
-                    "ON CREATE SET r.aspect = 'todo', r.created_at = datetime($p_now)",
+                    "ON CREATE SET r.aspect = 'todo', r.created_at = timestamp($p_now)",
                     {"p_fid": todo_id, "p_eid": eid, "p_now": now}
                 )
             except Exception:

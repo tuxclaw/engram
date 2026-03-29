@@ -631,7 +631,7 @@ def _store_live_candidates(conn, candidates: list[dict], agent_id: str, session_
                         "MATCH (f:Fact {id: $p_fid}), (e:Entity {id: $p_eid}) "
                         "WHERE e.agent_id = $p_agent "
                         "MERGE (f)-[r:ABOUT]->(e) "
-                        "ON CREATE SET r.aspect = $p_aspect, r.created_at = datetime($p_now)",
+                        "ON CREATE SET r.aspect = $p_aspect, r.created_at = timestamp($p_now)",
                         {
                             "p_fid": fact_id,
                             "p_eid": entity_id,
