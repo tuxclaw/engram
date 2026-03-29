@@ -388,19 +388,16 @@ def chunk_text(text: str, max_chars: int = 4000) -> list[str]:
 
 
 def call_llm(prompt: str) -> Optional[dict]:
-    """Call local Ollama (qwen3.5:35b-a3b) for entity/relationship extraction.
+    """Call xAI Grok for entity/relationship extraction.
 
-    Falls back to xAI Grok if Ollama is unavailable.
+    Uses grok-4-1-fast-non-reasoning directly — no Ollama.
+    Local models lack the judgment needed for extraction policy enforcement.
     """
     try:
-        return _call_ollama(prompt)
+        return _call_xai(prompt)
     except Exception as e:
-        print(f"  ⚠️  Ollama extraction failed ({e}), falling back to xAI...")
-        try:
-            return _call_xai(prompt)
-        except Exception as e2:
-            print(f"  ⚠️  xAI fallback also failed: {e2}")
-            return None
+        print(f"  ⚠️  xAI extraction failed: {e}")
+        return None
 
 
 def _load_engram_config():
@@ -447,14 +444,13 @@ def _call_xai(prompt: str) -> Optional[dict]:
         raise RuntimeError("XAI_API_KEY not set")
     
     payload = json.dumps({
-        "model": "grok-3-mini-fast",
+        "model": "grok-4-1-fast-non-reasoning",
         "messages": [
             {"role": "system", "content": "You are a knowledge extraction assistant. Always respond with valid JSON only, no markdown fences."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.1,
-        "max_tokens": 4096,
-        "reasoning_effort": "low"
+        "max_tokens": 4096
     })
     
     req = urllib.request.Request(
