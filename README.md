@@ -37,9 +37,14 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 
 ### AE-Only Components
 - **Neo4j backend** — Richer graph queries and Cypher support (upstream uses Kuzu)
-- **Engram CLI** (`cli.py`) — 8 commands: search, entity, timeline, agent-history, facts, stats, briefing, health
+- **Engram CLI** (`cli.py`) — 14 commands: search, entity, timeline, agent-history, facts, stats, briefing, health, dispatch, todos, todo-add, todo-done, contradictions, recent
 - **Batch extractor** (`batch_extract.py`) — Catches missed messages from session logs
 - **Importance scoring** — LLM assigns `high`/`medium` labels, converted to numeric scores with category bonuses
+- **Delta briefings** — Show only what's new since your last session ("What did I miss?")
+- **Pre-dispatch context** — Auto-pull agent + project history for agent prompts
+- **Todo tracking** — Extract, manage, and auto-resolve todos as first-class facts
+- **Contradiction detection** — Detect and auto-supersede stale/conflicting facts
+- **Temporal queries** — `--since` / `--until` filtering on all search and fact commands
 
 ### Modified from Upstream
 - **Dream consolidation** (`consolidate.py`) — Reduced decay from 1%/day to 0.2%/day. Safe because extraction policy already filters noise at ingest time.
@@ -85,13 +90,16 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 
 | Component | Description |
 |---|---|
-| `cli.py` | **CLI** — search, entity, timeline, agent-history, facts, stats, briefing, health |
+| `cli.py` | **CLI** — 14 commands including search, dispatch, todos, contradictions, recent |
 | `ingest.py` | **Bulk ingest** — parallel LLM extraction with policy enforcement |
 | `context_query.py` | **Context queries** — semantic + graph search, live extraction (regex + LLM) |
 | `batch_extract.py` | **Batch extractor** — scans session logs, re-extracts missed messages |
 | `consolidate.py` | **Dream consolidation** — gentle decay, centrality boost, dedup |
 | `schema_neo4j.py` | **Neo4j schema** — node/relationship definitions |
-| `briefing.py` | **Briefings** — generate session briefings from graph state |
+| `briefing.py` | **Briefings** — full + delta briefings from graph state |
+| `dispatch_context.py` | **Pre-dispatch** — agent + project context for prompt building |
+| `todos.py` | **Todos** — track, add, resolve todos as first-class facts |
+| `contradictions.py` | **Contradictions** — detect and supersede stale/conflicting facts |
 | `EXTRACTION_POLICY.md` | **Policy** — canonical reference for what gets stored, skipped, and scored |
 | `extensions/context-engine/` | **OpenClaw plugin** — assemble() + afterTurn() hooks with assembly cache |
 | `dashboard/` | **Dashboard** — Sigma.js graph visualization (optional) |
@@ -149,13 +157,32 @@ Copy or symlink `extensions/context-engine/` into your OpenClaw extensions direc
 ## CLI Usage
 
 ```bash
+# Core queries
 engram search "CalCity Stripe"                  # Search everything
+engram search "deploy" --since 2026-03-28       # Time-filtered search
 engram entity "Woody"                           # Full context for an entity
 engram timeline "CalCity" --days 30             # Project/entity timeline
 engram agent-history "Buzz" --project CalCity   # What an agent built
 engram facts --recent --days 7                  # Recent facts
+engram facts --since 2026-03-27 --until 2026-03-29  # Date-range facts
+
+# Session startup
+engram briefing --delta                         # What's new since last session
+engram briefing --save                          # Full briefing, save to BRIEFING.md
+engram recent --hours 48                        # All activity in last N hours
+
+# Agent dispatch
+engram dispatch Buzz --project CalCity          # Pre-dispatch context for prompts
+
+# Todo tracking
+engram todos                                    # List open todos
+engram todos --all                              # Include resolved
+engram todo-add "Deploy Rosamond.info"          # Add a todo
+engram todo-done fact_abc123                    # Resolve a todo
+
+# Memory health
+engram contradictions --days 7                  # Recent superseded facts
 engram stats                                    # Graph statistics
-engram briefing --save                          # Generate session briefing
 engram health                                   # Graph health check
 ```
 
