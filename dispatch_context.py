@@ -10,7 +10,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-import kuzu
+try:
+    import kuzu
+except ImportError:
+    kuzu = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engram.backend import get_db, get_conn
@@ -67,7 +70,7 @@ def get_dispatch_context(conn: kuzu.Connection, agent_name: str, project_name: O
         where_parts = ["f.agent_id = $p_agent"]
         params = {"p_agent": agent_name, "p_limit": 12}
         if agent_entity:
-            where_parts.append("(f)-[:ABOUT]->(:Entity {id: $p_eid})")
+            where_parts.append("exists { MATCH (f)-[:ABOUT]->(:Entity {id: $p_eid}) }")
             params["p_eid"] = agent_entity["id"]
         where_clause = " OR ".join(where_parts)
         result = conn.execute(
@@ -137,10 +140,10 @@ def get_dispatch_context(conn: kuzu.Connection, agent_name: str, project_name: O
         where_parts = ["lower(f.category) = 'decision'"]
         scoped_parts = ["f.agent_id = $p_agent_name"]
         if agent_entity:
-            scoped_parts.append("(f)-[:ABOUT]->(:Entity {id: $p_agent_eid})")
+            scoped_parts.append("exists { MATCH (f)-[:ABOUT]->(:Entity {id: $p_agent_eid}) }")
             params["p_agent_eid"] = agent_entity["id"]
         if project_entity:
-            scoped_parts.append("(f)-[:ABOUT]->(:Entity {id: $p_project_eid})")
+            scoped_parts.append("exists { MATCH (f)-[:ABOUT]->(:Entity {id: $p_project_eid}) }")
             params["p_project_eid"] = project_entity["id"]
         where_clause = " AND (" + " OR ".join(scoped_parts) + ")"
         result = conn.execute(

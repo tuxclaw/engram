@@ -7,7 +7,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-import kuzu
+try:
+    import kuzu
+except ImportError:
+    kuzu = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -15,7 +18,6 @@ PREF_PAT = re.compile(r"^(?P<subj>[^,]{2,60})\s+prefers?\s+(?P<obj>.+)$", re.IGN
 VERSION_PAT = re.compile(r"\b(?:version|v)\s*(\d+(?:\.\d+)+)\b", re.IGNORECASE)
 STATE_PAIRS = [
     ("enabled", "disabled"),
-    ("on", "off"),
     ("true", "false"),
     ("yes", "no"),
     ("added", "removed"),
@@ -48,9 +50,11 @@ def _extract_version(content: str) -> Optional[str]:
 
 def _state_conflict(new_text: str, old_text: str) -> bool:
     for a, b in STATE_PAIRS:
-        if a in new_text and b in old_text:
+        a_pat = re.compile(r'\b' + re.escape(a) + r'\b')
+        b_pat = re.compile(r'\b' + re.escape(b) + r'\b')
+        if a_pat.search(new_text) and b_pat.search(old_text):
             return True
-        if b in new_text and a in old_text:
+        if b_pat.search(new_text) and a_pat.search(old_text):
             return True
     return False
 

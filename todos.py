@@ -6,7 +6,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-import kuzu
+try:
+    import kuzu
+except ImportError:
+    kuzu = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engram.ingest import generate_id, normalize_entity_name

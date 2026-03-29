@@ -346,7 +346,7 @@ def _resolve_related_todos(conn: kuzu.Connection, content: str, about: list[str]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for tid, tcontent in todo_rows:
         ratio = SequenceMatcher(None, snippet.lower(), str(tcontent or "").lower()).ratio()
-        if ratio < 0.62:
+        if ratio < 0.75:
             continue
         try:
             conn.execute(
