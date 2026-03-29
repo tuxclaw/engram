@@ -36,7 +36,6 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 - Content is stripped pre-extraction AND facts are re-scanned pre-storage (defense-in-depth)
 
 ### AE-Only Components
-- **Kuzu backend (embedded)** — Zero-ops local graph DB (upstream uses Kuzu)
 - **Engram CLI** (`cli.py`) — 14 commands: search, entity, timeline, agent-history, facts, stats, briefing, health, dispatch, todos, todo-add, todo-done, contradictions, recent
 - **Batch extractor** (`batch_extract.py`) — Catches missed messages from session logs
 - **Importance scoring** — LLM assigns `high`/`medium` labels, converted to numeric scores with category bonuses
@@ -51,6 +50,7 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 - **Assembly cache** — Cherry-picked from upstream v0.2.0. Session-scoped caching (3-min TTL for queries, 10-min for pinned facts).
 
 ### Shared with Upstream
+- **Kuzu backend (embedded)** — Zero-ops local graph DB, no server required
 - **Channel-scoped pinned context** — Inject standing rules per-channel or per-session
 - **Briefings** (`briefing.py`) — Generate session briefings from graph state
 - **Dashboard** (`dashboard/`) — Sigma.js graph visualization (optional)
