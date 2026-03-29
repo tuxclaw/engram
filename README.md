@@ -39,10 +39,12 @@ AE uses **xAI `grok-4-1-fast-non-reasoning`** exclusively for extraction. No Oll
 - **Neo4j backend** — Richer graph queries and Cypher support (upstream uses Kuzu)
 - **Engram CLI** (`cli.py`) — 8 commands: search, entity, timeline, agent-history, facts, stats, briefing, health
 - **Batch extractor** (`batch_extract.py`) — Catches missed messages from session logs
-- **Dream consolidation** (`consolidate.py`) — Gentle importance decay (0.2%/day), centrality boost, dedup, emotional patterns
-- **Assembly cache** — Session-scoped caching in the context engine plugin (3-min TTL for queries, 10-min for pinned facts)
-- **Channel-scoped pinned context** — Inject standing rules per-channel or per-session
 - **Importance scoring** — LLM assigns `high`/`medium` labels, converted to numeric scores with category bonuses
+
+### Modified from Upstream
+- **Dream consolidation** (`consolidate.py`) — Reduced decay from 1%/day to 0.2%/day. Safe because extraction policy already filters noise at ingest time.
+- **Assembly cache** — Cherry-picked from upstream v0.2.0. Session-scoped caching (3-min TTL for queries, 10-min for pinned facts).
+- **Channel-scoped pinned context** — Inject standing rules per-channel or per-session
 
 ## Architecture
 
